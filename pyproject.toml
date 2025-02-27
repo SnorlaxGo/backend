@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "go_game"
+version = "0.1.0"
+dependencies = [
+    "sqlalchemy",  # You can specify version like "sqlalchemy>=1.4.0" if needed
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["go_game*"]
