@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
-from . import models, auth
-from .database import SessionLocal, engine
+from go_game import models, auth
+from go_game.database import SessionLocal, engine
 
 def seed_users():
     db = SessionLocal()
