@@ -57,6 +57,7 @@ class ConnectionManager:
         self.schedule_disconnect_check(game_id, player_id, db)
 
     async def broadcast_to_game(self, game_id: int, message: dict):
+        print(f"Connections for game {game_id}: {self.active_connections[game_id]}")
         if game_id in self.active_connections:
             for connection in self.active_connections[game_id]:
                 print(f"Broadcasting to game {game_id}: {message}")

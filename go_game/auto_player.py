@@ -8,9 +8,16 @@ import sys
 
 BLACK = 1
 WHITE = 2
+STAGING_URL = "go-backend-124a4c405325.herokuapp.com"
+STAGING_HTTP_PROTOCOL = "https"
+STAGING_WS_PROTOCOL = "wss"
+
+DEVELOPMENT_URL = "localhost:8080"
+DEVELOPMENT_HTTP_PROTOCOL = "http"
+DEVELOPMENT_WS_PROTOCOL = "ws"
 
 class AutoPlayer:
-    def __init__(self, base_url="http://localhost:8080"):
+    def __init__(self, base_url="http://localhost:8080", http_protocol="http", ws_protocol="ws"):
         self.base_url = base_url
         self.token = None
         self.board = None
@@ -18,10 +25,12 @@ class AutoPlayer:
         self.my_color = None
         self.game_id = None
         self.port = 8080
+        self.http_protocol = http_protocol
+        self.ws_protocol = ws_protocol
         
     def login(self, username, password):
         response = requests.post(
-            f"{self.base_url}/token",
+            f"{self.http_protocol}://{self.base_url}/token",
             data={"username": username, "password": password}
         )
         if response.status_code == 200:
@@ -34,7 +43,7 @@ class AutoPlayer:
     def create_challenge(self):
         headers = {"Authorization": f"Bearer {self.token}"}
         response = requests.post(
-            f"{self.base_url}/challenge/open",
+            f"{self.http_protocol}://{self.base_url}/challenge/open",
             headers=headers,
             json={
                 "boardSize": self.board_size,
@@ -58,7 +67,7 @@ class AutoPlayer:
     def make_move(self, x, y):
         headers = {"Authorization": f"Bearer {self.token}"}
         response = requests.post(
-            f"{self.base_url}/game/{self.game_id}/move",
+            f"{self.http_protocol}://{self.base_url}/game/{self.game_id}/move",
             headers=headers,
             json={"x": x, "y": y}
         )
@@ -98,7 +107,7 @@ class AutoPlayer:
 
     async def play_game(self):
         if not self.game_id:
-            ws_uri = f"ws://localhost:{self.port}/ws/challenge/{self.challenge_id}"
+            ws_uri = f"{self.ws_protocol}://{self.base_url}/ws/challenge/{self.challenge_id}"
             async with websockets.connect(ws_uri) as websocket:
                 print("Connected to challenge websocket, waiting for match...")
                 
@@ -117,7 +126,7 @@ class AutoPlayer:
         
         # Now connect to game websocket
         print(f"Connecting to game websocket for game {self.game_id}")
-        ws_uri = f"ws://localhost:{self.port}/ws/game/{self.game_id}?token={self.token}"
+        ws_uri = f"{self.ws_protocol}://{self.base_url}/ws/game/{self.game_id}?token={self.token}"
         async with websockets.connect(ws_uri) as websocket:
             print("Connected to game websocket")
             
@@ -171,7 +180,8 @@ class AutoPlayer:
                     break
 
 async def main():
-    player = AutoPlayer()
+    player = AutoPlayer(base_url=STAGING_URL, http_protocol=STAGING_HTTP_PROTOCOL, ws_protocol=STAGING_WS_PROTOCOL)
+    #player = AutoPlayer(base_url=DEVELOPMENT_URL, http_protocol=DEVELOPMENT_HTTP_PROTOCOL, ws_protocol=DEVELOPMENT_WS_PROTOCOL)
     if player.login(sys.argv[1], sys.argv[2]):
         if player.create_challenge():
             await player.play_game()
