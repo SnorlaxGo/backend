@@ -80,8 +80,54 @@ class Game(Base):
     black_last_move_at = Column(DateTime)
     white_last_move_at = Column(DateTime)
 
+    # Add these new fields after the existing columns
+    draw_offered_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    draw_offered_at = Column(DateTime, nullable=True)
+
+    def offer_draw(self, player_id: int) -> bool:
+        """
+        Offer a draw. Returns True if the offer was accepted, False otherwise.
+        """
+        if self.status != GameStatus.ACTIVE:
+            return False
+        
+        # Check if player is in the game
+        if player_id not in (self.black_player_id, self.white_player_id):
+            return False
+            
+        self.draw_offered_by_id = player_id
+        self.draw_offered_at = datetime.utcnow()
+        return False
+
+    def accept_draw(self, player_id: int) -> bool:
+        """
+        Accept a draw offer. Returns True if successful.
+        """
+        if not self.draw_offered_by_id or self.status != GameStatus.ACTIVE:
+            return False
+            
+        # Can't accept your own draw offer
+        if player_id == self.draw_offered_by_id:
+            return False
+            
+        # Check if player is in the game
+        if player_id not in (self.black_player_id, self.white_player_id):
+            return False
+            
+        self.status = GameStatus.DRAW
+        self.clear_draw_offer()
+        return True
+    
+    def clear_draw_offer(self) -> None:
+        """Clear any existing draw offer"""
+        self.draw_offered_by_id = None
+        self.draw_offered_at = None
+
     def update_time_remaining(self, current_time: datetime = None) -> None:
         """Update time used by the player who just moved"""
+        # Clear any draw offers when a move is made
+        self.clear_draw_offer()
+        
         if not current_time:
             current_time = datetime.utcnow()
             

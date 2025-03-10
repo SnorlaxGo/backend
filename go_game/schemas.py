@@ -11,6 +11,8 @@ class WebSocketMessageType(str, Enum):
     ERROR = "error"
     TIMEOUT = "timeout"
     RESIGN = "resign"
+    DRAW_OFFER = "draw_offer"
+    DRAW_ACCEPTED = "draw_accepted"
 
 
 class GameStateResponse(BaseModel):
@@ -128,3 +130,14 @@ class ActiveGameInfo(BaseModel):
 class ActiveGamesResponse(BaseModel):
     games: List[ActiveGameInfo]
     count: int 
+
+class DrawOfferRequest(BaseModel):
+    game_id: int
+
+class DrawOfferResponse(BaseModel):
+    status: str
+    message: str
+    
+class DrawAcceptResponse(BaseModel):
+    status: str
+    message: str 

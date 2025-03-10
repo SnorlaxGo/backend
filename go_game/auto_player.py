@@ -135,6 +135,17 @@ class AutoPlayer:
                     message = await websocket.recv()
                     data = json.loads(message)
                     print(f"Received message: {data['type']}")  # Debug print
+                    if data["type"] == "draw_offer":
+                        print("Draw offer received!")
+                        # Accept the draw offer
+                        accept_draw_url = f"{self.http_protocol}://{self.base_url}/game/{self.game_id}/accept_draw"
+                        headers = {"Authorization": f"Bearer {self.token}"}
+                        response = requests.post(accept_draw_url, headers=headers)
+                        if response.status_code == 200:
+                            print("Draw offer accepted!")
+                        else:
+                            print(f"Failed to accept draw offer: {response.status_code}")
+                        break
                     if data["type"] in ["game_abandoned", "timeout", "resign"]:
                         print(f"Game {data['type']}!")
                         break
@@ -180,8 +191,8 @@ class AutoPlayer:
                     break
 
 async def main():
-    player = AutoPlayer(base_url=STAGING_URL, http_protocol=STAGING_HTTP_PROTOCOL, ws_protocol=STAGING_WS_PROTOCOL)
-    #player = AutoPlayer(base_url=DEVELOPMENT_URL, http_protocol=DEVELOPMENT_HTTP_PROTOCOL, ws_protocol=DEVELOPMENT_WS_PROTOCOL)
+    #player = AutoPlayer(base_url=STAGING_URL, http_protocol=STAGING_HTTP_PROTOCOL, ws_protocol=STAGING_WS_PROTOCOL)
+    player = AutoPlayer(base_url=DEVELOPMENT_URL, http_protocol=DEVELOPMENT_HTTP_PROTOCOL, ws_protocol=DEVELOPMENT_WS_PROTOCOL)
     if player.login(sys.argv[1], sys.argv[2]):
         if player.create_challenge():
             await player.play_game()

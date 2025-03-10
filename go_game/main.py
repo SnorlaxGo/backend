@@ -22,7 +22,10 @@ from .schemas import (
     ActiveGameInfo,
     ActiveGamesResponse,
     WebSocketMessageType,
-    WebSocketMessage
+    WebSocketMessage,
+    DrawOfferRequest,
+    DrawOfferResponse,
+    DrawAcceptResponse
 )
 from .auth import get_current_user, get_current_user_ws, Token, authenticate_user, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES
 from .utils.board_visualizer import visualize_game
@@ -390,44 +393,6 @@ def get_current_game_state(
     
     return game_state
 
-@app.post("/game/{game_id}/pass")
-def pass_turn(
-    game_id: int,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    game = db.query(models.Game).filter(models.Game.id == game_id).first()
-    if not game:
-        raise HTTPException(status_code=404, detail="Game not found")
-    
-    # Verify it's the player's turn
-    is_black_turn = len(game.moves) % 2 == 0
-    if (is_black_turn and game.black_player_id != current_user.id) or \
-       (not is_black_turn and game.white_player_id != current_user.id):
-        raise HTTPException(status_code=403, detail="Not your turn")
-    
-    # Record the pass move
-    new_move = models.Move(
-        game_id=game_id,
-        player_id=current_user.id,
-        x=None,  # None indicates a pass
-        y=None,
-        is_pass=True
-    )
-    db.add(new_move)
-    
-    # Check if this is second consecutive pass (game end)
-    if len(game.moves) > 0 and game.moves[-1].is_pass:
-        game.status = "finished"
-        # You might want to calculate and store the final score here
-    
-    db.commit()
-    return {
-        "status": "success",
-        "game_state": get_game_state(game_id, db),
-        "game_status": game.status
-    }
-
 @app.post("/game/{game_id}/resign")
 async def resign_game(
     game_id: int,
@@ -494,7 +459,70 @@ def get_active_games(
         count=len(game_info_list)
     )
 
+@app.post("/game/{game_id}/offer_draw")
+async def offer_draw(
+    game_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+) -> DrawOfferResponse:
+    game = db.query(models.Game).filter(models.Game.id == game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    
+    # Verify the user is a player in this game
+    if current_user.id not in [game.black_player_id, game.white_player_id]:
+        raise HTTPException(status_code=403, detail="Not a player in this game")
+    
+    # Offer the draw
+    result = game.offer_draw(current_user.id)
+    db.commit()
+    
+    # Notify the other player via websocket
+    gs = GameService(db)
+    message = WebSocketMessage(
+        type=WebSocketMessageType.DRAW_OFFER,
+        data=gs.to_response(game)
+    )
+    await manager.broadcast_to_game(game_id, message.dict())
+    
+    return DrawOfferResponse(
+        status="success",
+        message="Draw offer sent"
+    )
 
+@app.post("/game/{game_id}/accept_draw")
+async def accept_draw(
+    game_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+) -> DrawAcceptResponse:
+    game = db.query(models.Game).filter(models.Game.id == game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    
+    # Verify the user is a player in this game
+    if current_user.id not in [game.black_player_id, game.white_player_id]:
+        raise HTTPException(status_code=403, detail="Not a player in this game")
+    
+    # Accept the draw
+    result = game.accept_draw(current_user.id)
+    if not result:
+        raise HTTPException(status_code=400, detail="No draw offer to accept")
+    
+    db.commit()
+    
+    # Notify both players via websocket
+    gs = GameService(db)
+    message = WebSocketMessage(
+        type=WebSocketMessageType.DRAW_ACCEPTED,
+        data=gs.to_response(game)
+    )
+    await manager.broadcast_to_game(game_id, message.dict())
+    
+    return DrawAcceptResponse(
+        status="success",
+        message="Draw accepted, game ended in a draw"
+    )
 
 @app.on_event("startup")
 async def start_cleanup_task():
