@@ -15,7 +15,7 @@ load_dotenv()
 config = context.config
 
 # Override the sqlalchemy.url with the value from .env
-config.set_main_option("sqlalchemy.url", os.getenv("DATABASE_URL"))
+config.set_main_option("sqlalchemy.url", os.getenv("ALCHEMY_DATABASE_URL"))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
