@@ -1,1 +1,1 @@
-web: uvicorn go_game.main:app --host=0.0.0.0 --port=${PORT:-8000} 
+web: uvicorn go_game.server:app --host=0.0.0.0 --port=${PORT:-8000} 
