@@ -1,13 +1,14 @@
-from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, status, Query
+from fastapi import FastAPI, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 import asyncio
+import json
 
 from .database import engine, get_db
 from fastapi.security import OAuth2PasswordRequestForm
 import go_game.models as models
 from .game_logic import GameService, InvalidMoveError, KoViolationError, SuicideMoveError
 from .models import StoneColor, GameStatus, TimeControl
-from .websocket_manager import manager, challenge_manager, WebSocketMessage, WebSocketMessageType
+from .websocket_manager import redis_manager
 
 from .schemas import (
     GameStateResponse,
@@ -27,16 +28,30 @@ from .schemas import (
     DrawOfferResponse,
     DrawAcceptResponse
 )
-from .auth import get_current_user, get_current_user_ws, Token, authenticate_user, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES
+from .auth import get_current_user, Token, authenticate_user, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES
 from .utils.board_visualizer import visualize_game
 from datetime import timedelta, datetime
 from .background_tasks import cleanup_stale_challenges, cleanup_stale_games
 import traceback
 import random
+
 app = FastAPI()
 
 # Create the database tables
 models.Base.metadata.create_all(bind=engine)
+
+@app.on_event("startup")
+async def startup_event():
+    # Initialize Redis connection
+    await redis_manager.connect()
+    # Start background tasks
+    asyncio.create_task(cleanup_stale_challenges())
+    asyncio.create_task(cleanup_stale_games())
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    # Close Redis connection
+    await redis_manager.disconnect()
 
 @app.get("/")
 async def root():
@@ -72,33 +87,6 @@ async def visualize_game_state(
     visualization = visualize_game(game)
     return {"board": visualization}
 
-@app.websocket("/ws/game/{game_id}")
-async def handle_game_socket(websocket: WebSocket, 
-                             game_id: int,
-                             token: str = Query(...),
-                             db: Session = Depends(get_db)):
-    print(f"token: {token.encode('utf-8')}")
-    current_user = await get_current_user_ws(token.encode('utf-8'), db)
-    
-    await manager.connect(websocket, game_id, current_user.id)
-    try:
-        # Send initial game state
-        service = GameService(db)
-        try:
-            game = service.get_game(game_id)
-            if game:
-                message = WebSocketMessage(
-                    type=WebSocketMessageType.GAME_STATE,
-                    data=service.to_response(game)
-                )
-                await websocket.send_json(message.dict())
-        finally:
-            db.close()
-            
-        await websocket.receive_text()  # Just wait for disconnect
-    except WebSocketDisconnect:
-        manager.disconnect(websocket, game_id, current_user.id, db)
-
 @app.post("/challenge/direct")
 def create_direct_challenge(challenge: DirectChallenge,
                             current_user: models.User = Depends(get_current_user),
@@ -117,7 +105,7 @@ def create_direct_challenge(challenge: DirectChallenge,
     return {"game_id": new_game.id, "status": "challenge_sent"}
 
 @app.post("/challenge/open")
-def create_open_challenge(challenge: OpenChallenge,
+async def create_open_challenge(challenge: OpenChallenge,
                           current_user: models.User = Depends(get_current_user),
                           db: Session = Depends(get_db)):
     # First, check for matching open challenges
@@ -144,12 +132,20 @@ def create_open_challenge(challenge: OpenChallenge,
         matching_challenge.status = "matched"
         db.commit()
         db.refresh(new_game)
-        return OpenChallengeResponse(
+        
+        # Notify via Redis about the match
+        response = OpenChallengeResponse(
             challenge_id=matching_challenge.id,
             status="matched",
             game_id=new_game.id,
             color=StoneColor.WHITE if white_player_id == current_user.id else StoneColor.BLACK
         )
+        await redis_manager.publish("challenge_updates", {
+            "challenge_id": matching_challenge.id,
+            "data": response.dict()
+        })
+        
+        return response
     
     # If no match, create new open challenge
     new_challenge = models.Challenge(
@@ -160,13 +156,22 @@ def create_open_challenge(challenge: OpenChallenge,
     )
     db.add(new_challenge)
     db.commit()
-    return OpenChallengeResponse(
+    
+    response = OpenChallengeResponse(
         challenge_id=new_challenge.id,
         status="waiting"
     )
+    
+    # Notify via Redis about the new challenge
+    await redis_manager.publish("challenge_updates", {
+        "challenge_id": new_challenge.id,
+        "data": response.dict()
+    })
+    
+    return response
 
 @app.post("/challenge/{challenge_id}/accept")
-def accept_challenge(challenge_id: int,
+async def accept_challenge(challenge_id: int,
                     current_user: models.User = Depends(get_current_user),
                      db: Session = Depends(get_db)):
     challenge = db.query(models.Challenge).filter(models.Challenge.id == challenge_id).first()
@@ -187,9 +192,20 @@ def accept_challenge(challenge_id: int,
     challenge.status = "accepted"
     db.commit()
     db.refresh(new_game)
-    return {"game_id": new_game.id, "status": "game_created"}
+    
+    # Notify via Redis about the acceptance
+    response = {
+        "game_id": new_game.id,
+        "status": "game_created",
+        "challenge_id": challenge_id
+    }
+    await redis_manager.publish("challenge_updates", {
+        "challenge_id": challenge_id,
+        "data": response
+    })
+    
+    return response
 
-# Add this new function for testing purposes
 @app.post("/anonymous/challenge")
 async def create_anonymous_challenge(challenge: AnonymousChallenge, db: Session = Depends(get_db)):
     """Create or accept an anonymous challenge"""
@@ -198,7 +214,7 @@ async def create_anonymous_challenge(challenge: AnonymousChallenge, db: Session 
         models.Challenge.status == "open",
         models.Challenge.board_size == challenge.board_size,
         models.Challenge.time_control == challenge.time_control,
-        models.Challenge.is_anonymous == True  # Add this field to Challenge model
+        models.Challenge.is_anonymous == True
     ).first()
     
     if matching_challenge:
@@ -224,12 +240,21 @@ async def create_anonymous_challenge(challenge: AnonymousChallenge, db: Session 
         db.commit()
         db.refresh(new_game)
         
-        return {
+        response = {
             "game_id": new_game.id,
             "status": "matched",
             "player_id": anon_player.id,
-            "color": "white"
+            "color": "white",
+            "challenge_id": matching_challenge.id
         }
+        
+        # Notify via Redis about the match
+        await redis_manager.publish("challenge_updates", {
+            "challenge_id": matching_challenge.id,
+            "data": response
+        })
+        
+        return response
     
     # If no match, create anonymous player and new open challenge
     anon_player = models.User(
@@ -252,89 +277,20 @@ async def create_anonymous_challenge(challenge: AnonymousChallenge, db: Session 
     db.add(new_challenge)
     db.commit()
     
-    return {
+    response = {
         "challenge_id": new_challenge.id,
         "status": "waiting",
         "player_id": anon_player.id,
         "color": "black"
     }
-
-@app.websocket("/ws/challenge/{challenge_id}")
-async def challenge_status(websocket: WebSocket, challenge_id: int):
-    await challenge_manager.connect(websocket, f"challenge_{challenge_id}")
-    start_time = datetime.now()
-    CHALLENGE_TIMEOUT = 10  # seconds
     
-    try:
-        while True:
-            # Create a new session for each check
-            db = next(get_db())
-            try:
-                challenge = db.query(models.Challenge).filter(models.Challenge.id == challenge_id).first()
-                
-                if not challenge:
-                    await websocket.send_json(
-                        OpenChallengeResponse(
-                            challenge_id=challenge_id,
-                            status="error",
-                            message="Challenge not found"
-                        ).dict()
-                    )
-                    break
-                
-                # Check if challenge has timed out
-                if (datetime.now() - start_time).seconds >= CHALLENGE_TIMEOUT:
-                    db.delete(challenge)
-                    db.commit()
-                    await websocket.send_json(
-                        OpenChallengeResponse(
-                            challenge_id=challenge_id,
-                            status=ChallengeStatus.EXPIRED
-                        ).dict()
-                    )
-                    break
-                print(f"challenge.status: {challenge.status}")
-                if challenge.status == ChallengeStatus.MATCHED:
-                    game = db.query(models.Game).filter(
-                        (models.Game.black_player_id == challenge.challenger_id) |
-                        (models.Game.white_player_id == challenge.challenger_id)
-                    ).order_by(models.Game.id.desc()).first()
-                    
-                    print(f"game.black_player_id: {game.black_player_id}, name: {game.black_player.username}")
-                    print(f"game.white_player_id: {game.white_player_id}, name: {game.white_player.username}")
-                    await websocket.send_json(
-                        OpenChallengeResponse(
-                            challenge_id=challenge_id,
-                            status=ChallengeStatus.MATCHED,
-                            game_id=game.id,
-                            color=StoneColor.BLACK if game.black_player_id == challenge.challenger_id else StoneColor.WHITE
-                        ).dict()
-                    )
-                    break
-                else:
-                    await websocket.send_json(
-                        OpenChallengeResponse(
-                            challenge_id=challenge_id,
-                            status=ChallengeStatus.WAITING
-                        ).dict()
-                    )
-
-            finally:
-                db.close()
-            
-            await asyncio.sleep(1)
-            
-    except WebSocketDisconnect:
-        # Cleanup on websocket disconnect
-        db = next(get_db())
-        try:
-            challenge = db.query(models.Challenge).filter(models.Challenge.id == challenge_id).first()
-            if challenge and challenge.status == "open":
-                db.delete(challenge)
-                db.commit()
-        finally:
-            db.close()
-        challenge_manager.disconnect(websocket, f"challenge_{challenge_id}")
+    # Notify via Redis about the new challenge
+    await redis_manager.publish("challenge_updates", {
+        "challenge_id": new_challenge.id,
+        "data": response
+    })
+    
+    return response
 
 @app.post("/game/{game_id}/move")
 async def make_game_move(
@@ -346,11 +302,15 @@ async def make_game_move(
     try:
         service = GameService(db)
         result = service.make_move(game_id, move.x, move.y, current_user.id)
-        # Broadcast the move to all connected clients for this game
-        await manager.broadcast_to_game(game_id, WebSocketMessage(
-            type=WebSocketMessageType.GAME_STATE,
-            data=result
-        ).dict())
+        
+        # Broadcast the move via Redis
+        await redis_manager.publish("game_updates", {
+            "game_id": game_id,
+            "message": WebSocketMessage(
+                type=WebSocketMessageType.GAME_STATE,
+                data=result
+            ).dict()
+        })
         
         return {"status": "success"}
         
@@ -417,7 +377,12 @@ async def resign_game(
         data=gs.to_response(game)
     )
 
-    await manager.broadcast_to_game(game.id, message.dict())
+    # Broadcast via Redis
+    await redis_manager.publish("game_updates", {
+        "game_id": game.id,
+        "message": message.dict()
+    })
+    
     return message.dict()
 
 @app.get("/games/active", response_model=ActiveGamesResponse)
@@ -477,13 +442,17 @@ async def offer_draw(
     result = game.offer_draw(current_user.id)
     db.commit()
     
-    # Notify the other player via websocket
+    # Notify the other player via Redis
     gs = GameService(db)
     message = WebSocketMessage(
         type=WebSocketMessageType.DRAW_OFFER,
         data=gs.to_response(game)
     )
-    await manager.broadcast_to_game(game_id, message.dict())
+    
+    await redis_manager.publish("game_updates", {
+        "game_id": game_id,
+        "message": message.dict()
+    })
     
     return DrawOfferResponse(
         status="success",
@@ -511,20 +480,19 @@ async def accept_draw(
     
     db.commit()
     
-    # Notify both players via websocket
+    # Notify both players via Redis
     gs = GameService(db)
     message = WebSocketMessage(
         type=WebSocketMessageType.DRAW_ACCEPTED,
         data=gs.to_response(game)
     )
-    await manager.broadcast_to_game(game_id, message.dict())
+    
+    await redis_manager.publish("game_updates", {
+        "game_id": game_id,
+        "message": message.dict()
+    })
     
     return DrawAcceptResponse(
         status="success",
         message="Draw accepted, game ended in a draw"
     )
-
-@app.on_event("startup")
-async def start_cleanup_task():
-    asyncio.create_task(cleanup_stale_challenges())
-    asyncio.create_task(cleanup_stale_games())
