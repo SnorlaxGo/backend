@@ -1,6 +1,6 @@
 import asyncio
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, Query
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Query
 from sqlalchemy.orm import Session
 import redis.asyncio as redis
 import json
@@ -10,22 +10,24 @@ from .database import get_db
 from .auth import get_current_user_ws
 from .websocket_manager import manager, challenge_manager, redis_manager
 from .game_logic import GameService
+from . import models
 
-app = FastAPI()
+# Create router instead of app
+router = APIRouter(prefix="/api")  # Optional prefix
 
-@app.on_event("startup")
+@router.on_event("startup")
 async def startup_event():
     # Initialize Redis connections
-    await redis_manager.connect()
+
     await manager.start()
     await challenge_manager.start()
 
-@app.on_event("shutdown")
+@router.on_event("shutdown")
 async def shutdown_event():
     # Close Redis connections
     await redis_manager.disconnect()
 
-@app.websocket("/ws/game/{game_id}")
+@router.websocket("/ws/game/{game_id}")
 async def handle_game_socket(websocket: WebSocket, 
                              game_id: int,
                              token: str = Query(...),
@@ -53,7 +55,7 @@ async def handle_game_socket(websocket: WebSocket,
     except WebSocketDisconnect:
         manager.disconnect(websocket, game_id, current_user.id, db)
 
-@app.websocket("/ws/challenge/{challenge_id}")
+@router.websocket("/ws/challenge/{challenge_id}")
 async def challenge_status(websocket: WebSocket, challenge_id: int):
     await challenge_manager.connect(websocket, f"challenge_{challenge_id}")
     start_time = datetime.now()
@@ -131,6 +133,3 @@ async def challenge_status(websocket: WebSocket, challenge_id: int):
         finally:
             db.close()
         challenge_manager.disconnect(websocket, f"challenge_{challenge_id}")
-
-if __name__ == "__main__":
-    uvicorn.run("go_game.websocket_server:app", host="0.0.0.0", port=8001, reload=True) 

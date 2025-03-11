@@ -7,7 +7,7 @@ class Settings:
     API_V1_STR: str = "/api/v1"
     
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/go_game")
+    DATABASE_URL: str = os.getenv("ALCHEMY_DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/go_game")
     
     # JWT settings
     SECRET_KEY: str = os.getenv("SECRET_KEY", "your-secret-key-for-development")

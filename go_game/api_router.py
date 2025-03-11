@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Query
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Query, HTTPException, status
 from sqlalchemy.orm import Session
 import asyncio
 import json
@@ -35,12 +35,13 @@ from .background_tasks import cleanup_stale_challenges, cleanup_stale_games
 import traceback
 import random
 
-app = FastAPI()
+# Create router instead of app
+router = APIRouter()
 
 # Create the database tables
 models.Base.metadata.create_all(bind=engine)
 
-@app.on_event("startup")
+@router.on_event("startup")
 async def startup_event():
     # Initialize Redis connection
     await redis_manager.connect()
@@ -48,16 +49,16 @@ async def startup_event():
     asyncio.create_task(cleanup_stale_challenges())
     asyncio.create_task(cleanup_stale_games())
 
-@app.on_event("shutdown")
+@router.on_event("shutdown")
 async def shutdown_event():
     # Close Redis connection
     await redis_manager.disconnect()
 
-@app.get("/")
+@router.get("/")
 async def root():
     return {"message": "Welcome to the Go Game API"}
 
-@app.post("/token")
+@router.post("/token")
 async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db)
@@ -75,7 +76,7 @@ async def login(
     )
     return Token(access_token=access_token, token_type="bearer")
 
-@app.get("/games/{game_id}/visualize")
+@router.get("/games/{game_id}/visualize")
 async def visualize_game_state(
     game_id: int,
     db: Session = Depends(get_db)
@@ -87,7 +88,7 @@ async def visualize_game_state(
     visualization = visualize_game(game)
     return {"board": visualization}
 
-@app.post("/challenge/direct")
+@router.post("/challenge/direct")
 def create_direct_challenge(challenge: DirectChallenge,
                             current_user: models.User = Depends(get_current_user),
                             db: Session = Depends(get_db)):
@@ -104,7 +105,7 @@ def create_direct_challenge(challenge: DirectChallenge,
     db.refresh(new_game)
     return {"game_id": new_game.id, "status": "challenge_sent"}
 
-@app.post("/challenge/open")
+@router.post("/challenge/open")
 async def create_open_challenge(challenge: OpenChallenge,
                           current_user: models.User = Depends(get_current_user),
                           db: Session = Depends(get_db)):
@@ -170,7 +171,7 @@ async def create_open_challenge(challenge: OpenChallenge,
     
     return response
 
-@app.post("/challenge/{challenge_id}/accept")
+@router.post("/challenge/{challenge_id}/accept")
 async def accept_challenge(challenge_id: int,
                     current_user: models.User = Depends(get_current_user),
                      db: Session = Depends(get_db)):
@@ -206,7 +207,7 @@ async def accept_challenge(challenge_id: int,
     
     return response
 
-@app.post("/anonymous/challenge")
+@router.post("/anonymous/challenge")
 async def create_anonymous_challenge(challenge: AnonymousChallenge, db: Session = Depends(get_db)):
     """Create or accept an anonymous challenge"""
     # First, check for matching open anonymous challenges
@@ -292,7 +293,7 @@ async def create_anonymous_challenge(challenge: AnonymousChallenge, db: Session 
     
     return response
 
-@app.post("/game/{game_id}/move")
+@router.post("/game/{game_id}/move")
 async def make_game_move(
     game_id: int,
     move: GameMoveRequest,
@@ -331,7 +332,7 @@ async def make_game_move(
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/game/{game_id}/state")
+@router.get("/game/{game_id}/state")
 def get_current_game_state(
     game_id: int,
     current_user: models.User = Depends(get_current_user),
@@ -353,7 +354,7 @@ def get_current_game_state(
     
     return game_state
 
-@app.post("/game/{game_id}/resign")
+@router.post("/game/{game_id}/resign")
 async def resign_game(
     game_id: int,
     current_user: models.User = Depends(get_current_user),
@@ -385,7 +386,7 @@ async def resign_game(
     
     return message.dict()
 
-@app.get("/games/active", response_model=ActiveGamesResponse)
+@router.get("/games/active", response_model=ActiveGamesResponse)
 def get_active_games(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -424,7 +425,7 @@ def get_active_games(
         count=len(game_info_list)
     )
 
-@app.post("/game/{game_id}/offer_draw")
+@router.post("/game/{game_id}/offer_draw")
 async def offer_draw(
     game_id: int,
     current_user: models.User = Depends(get_current_user),
@@ -459,7 +460,7 @@ async def offer_draw(
         message="Draw offer sent"
     )
 
-@app.post("/game/{game_id}/accept_draw")
+@router.post("/game/{game_id}/accept_draw")
 async def accept_draw(
     game_id: int,
     current_user: models.User = Depends(get_current_user),

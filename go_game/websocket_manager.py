@@ -10,9 +10,6 @@ from sqlalchemy.orm import Session
 from .game_logic import GameService
 from .config import settings
 
-# Redis connection
-REDIS_URL = "redis://localhost:6379/0"  # Update with your Redis URL
-
 class RedisManager:
     """Handles Redis pub/sub for WebSocket communication"""
     
@@ -26,6 +23,8 @@ class RedisManager:
         """Connect to Redis"""
         self.redis_conn = await redis.from_url(self.redis_url)
         self.pubsub = self.redis_conn.pubsub()
+        
+
     
     async def disconnect(self):
         """Disconnect from Redis"""
@@ -52,25 +51,10 @@ class RedisManager:
             await self.connect()
         
         await self.pubsub.subscribe(**{channel: callback})
-        
-        # Start listener if not already running
         if not self.listener_task or self.listener_task.done():
-            self.listener_task = create_task(self._listener())
-    
-    async def _listener(self):
-        """Listen for messages on subscribed channels"""
-        while True:
-            try:
-                message = await self.pubsub.get_message(ignore_subscribe_messages=True)
-                if message:
-                    # Process message
-                    pass
-                await asyncio.sleep(0.01)
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                print(f"Redis listener error: {e}")
-                await asyncio.sleep(1)  # Avoid tight loop on error
+            self.listener_task = asyncio.create_task(self.pubsub.run())
+        
+
 
 class ChallengeConnectionManager:
     def __init__(self, redis_manager: RedisManager = None):
@@ -129,13 +113,18 @@ class ConnectionManager:
     
     async def start(self):
         """Start the Redis connection and subscribe to game channels"""
+        print("Starting Redis connection")
         await self.redis.connect()
+        print("Subscribing to game_updates")
         await self.redis.subscribe("game_updates", self._handle_game_update)
+        print("Subscribing to disconnect_requests")
         await self.redis.subscribe("disconnect_requests", self._handle_disconnect_request)
+        print("completed")
     
     async def _handle_game_update(self, message):
         """Handle game updates from Redis"""
         data = json.loads(message["data"])
+        print(f"Received game update: {data}")
         game_id = data.get("game_id")
         if game_id and game_id in self.active_connections:
             await self.broadcast_to_game(game_id, data["message"])

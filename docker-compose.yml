@@ -6,32 +6,16 @@ services:
       context: .
       dockerfile: Dockerfile.api
     ports:
-      - "8000:8000"
+      - "8080:8080"
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/go_game
+      - ALCHEMY_DATABASE_URL=postgresql://postgres:postgres@db:5432/go_game
     depends_on:
       - redis
       - db
     volumes:
       - .:/app
-    command: uvicorn go_game.main:app --host 0.0.0.0 --port 8000 --reload
-
-  websocket:
-    build:
-      context: .
-      dockerfile: Dockerfile.websocket
-    ports:
-      - "8001:8001"
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/go_game
-    depends_on:
-      - redis
-      - db
-    volumes:
-      - .:/app
-    command: python -m go_game.websocket_server
+    command: uvicorn go_game.server:app --host 0.0.0.0 --port 8080 --reload
 
   redis:
     image: redis:7

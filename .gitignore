@@ -27,7 +27,8 @@ build/
 
 # Logs
 *.log 
-.DS_Store
+**/.DS_Store
+
 
 # New additions from the code block
 .pytest_cache/
