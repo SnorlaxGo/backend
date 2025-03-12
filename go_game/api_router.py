@@ -28,12 +28,15 @@ from .schemas import (
     DrawOfferResponse,
     DrawAcceptResponse
 )
-from .auth import get_current_user, Token, authenticate_user, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES
+from .auth import get_current_user, Token, authenticate_user, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, create_refresh_token, validate_token
 from .utils.board_visualizer import visualize_game
 from datetime import timedelta, datetime
 from .background_tasks import cleanup_stale_challenges, cleanup_stale_games
 import traceback
 import random
+from fastapi.security import OAuth2PasswordRequestForm
+from pydantic import BaseModel
+from jwt import PyJWTError
 
 # Create router instead of app
 router = APIRouter()
@@ -74,7 +77,8 @@ async def login(
     access_token = create_access_token(
         data={"sub": user.username}, expires_delta=access_token_expires
     )
-    return Token(access_token=access_token, token_type="bearer")
+    refresh_token = create_refresh_token(data={"sub": user.username})
+    return Token(access_token=access_token, refresh_token=refresh_token, token_type="bearer")
 
 @router.get("/games/{game_id}/visualize")
 async def visualize_game_state(
@@ -497,3 +501,55 @@ async def accept_draw(
         status="success",
         message="Draw accepted, game ended in a draw"
     )
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+@router.post("/token/refresh")
+async def refresh_token(
+    request: RefreshTokenRequest,
+    db: Session = Depends(get_db)
+) -> Token:
+    try:
+        # Validate the refresh token
+        payload = validate_token(request.refresh_token)
+        
+        # Check if it's actually a refresh token
+        if payload["type"] != "refresh":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token type",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        username = payload["username"]
+        
+        # Get the user
+        user = db.query(models.User).filter(models.User.username == username).first()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        # Create new access token
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user.username}, expires_delta=access_token_expires
+        )
+        
+        # Create new refresh token
+        refresh_token = create_refresh_token(data={"sub": user.username})
+        
+        return Token(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            token_type="bearer"
+        )
+    except PyJWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )

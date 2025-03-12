@@ -22,14 +22,17 @@ if not SECRET_KEY:
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
+REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 class Token(BaseModel):
     access_token: str
+    refresh_token: str
     token_type: str
 
 
 class TokenData(BaseModel):
     username: Union[str, None] = None
+    token_type: str = "access"
 
 
 class User(BaseModel):
@@ -49,15 +52,15 @@ credentials_exception = HTTPException(
     headers={"WWW-Authenticate": "Bearer"},
 )
 
-def validate_token(token: str) -> str:
-    """Core token validation logic, returns username"""
-
+def validate_token(token: str) -> dict:
+    """Core token validation logic, returns payload with username and token type"""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
+        token_type: str = payload.get("type", "access")  # Default to access for backward compatibility
         if username is None:
             raise credentials_exception
-        return username
+        return {"username": username, "type": token_type}
     except PyJWTError:
         raise credentials_exception
 
@@ -65,7 +68,15 @@ async def get_current_user(
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db)
 ) -> models.User:
-    username = validate_token(token)
+    payload = validate_token(token)
+    username = payload["username"]
+    # Only allow access tokens for API authentication
+    if payload["type"] != "access":
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid token type",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     user = db.query(models.User).filter(models.User.username == username).first()
     if user is None:
         raise credentials_exception
@@ -93,8 +104,15 @@ def create_access_token(data: dict, expires_delta: Union[timedelta, None] = None
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=200)
-    to_encode.update({"exp": expire})
+        expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire, "type": "access"})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def create_refresh_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode.update({"exp": expire, "type": "refresh"})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
