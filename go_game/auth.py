@@ -83,7 +83,8 @@ async def get_current_user(
     return user
 
 async def get_current_user_ws(token: bytes, db: Session) -> models.User:
-    username = validate_token(token.decode())
+    payload = validate_token(token.decode())
+    username = payload["username"]
     user = db.query(models.User).filter(models.User.username == username).first()
     if user is None:
         raise credentials_exception

@@ -191,8 +191,8 @@ class AutoPlayer:
                     break
 
 async def main():
-    player = AutoPlayer(base_url=STAGING_URL, http_protocol=STAGING_HTTP_PROTOCOL, ws_protocol=STAGING_WS_PROTOCOL)
-    #player = AutoPlayer(base_url=DEVELOPMENT_URL, http_protocol=DEVELOPMENT_HTTP_PROTOCOL, ws_protocol=DEVELOPMENT_WS_PROTOCOL)
+    #player = AutoPlayer(base_url=STAGING_URL, http_protocol=STAGING_HTTP_PROTOCOL, ws_protocol=STAGING_WS_PROTOCOL)
+    player = AutoPlayer(base_url=DEVELOPMENT_URL, http_protocol=DEVELOPMENT_HTTP_PROTOCOL, ws_protocol=DEVELOPMENT_WS_PROTOCOL)
     if player.login(sys.argv[1], sys.argv[2]):
         if player.create_challenge():
             await player.play_game()
