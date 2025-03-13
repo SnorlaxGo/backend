@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Any
 from asyncio import Task, create_task, sleep
 import redis.asyncio as redis
 from .models import Game, StoneColor, GameStatus
-from .schemas import WebSocketMessage, WebSocketMessageType
+from .schemas import WebSocketMessage, WebSocketMessageType, PlayerConnectionEvent, PlayerDisconnectedMessage, RedisConnectionEvent, PlayerReconnectedMessage
 from sqlalchemy.orm import Session
 from .game_logic import GameService
 from .config import settings
@@ -118,7 +118,7 @@ class ConnectionManager:
         print("Subscribing to game_updates")
         await self.redis.subscribe("game_updates", self._handle_game_update)
         print("Subscribing to disconnect_requests")
-        await self.redis.subscribe("disconnect_requests", self._handle_disconnect_request)
+        await self.redis.subscribe("game_connections", self._handle_connection_events)
         print("completed")
     
     async def _handle_game_update(self, message):
@@ -126,15 +126,39 @@ class ConnectionManager:
         data = json.loads(message["data"])
         print(f"Received game update: {data}")
         game_id = data.get("game_id")
+        source_id = data.get("source_id")
+        if source_id == id(self):
+            return
         if game_id and game_id in self.active_connections:
             await self.broadcast_to_game(game_id, data["message"])
     
-    async def _handle_disconnect_request(self, message):
-        """Handle disconnect requests from Redis"""
+    async def _handle_connection_events(self, message):
+        """Handle connection events from Redis"""
         data = json.loads(message["data"])
+        action = data.get("action")
         game_id = data.get("game_id")
-        if game_id and game_id in self.active_connections:
-            await self.close_game_connections(game_id)
+        source_id = data.get("source_id")
+        if source_id == id(self):
+            print(f"ignoring message from self: {data}", flush=True)
+            return
+        
+        print(f"Received connection event: {action} for game {game_id}", flush=True)
+        print(f"source_id: {source_id}", flush=True)
+        print(f"id(self): {id(self)}", flush=True)
+        if action == "game_abandoned" and game_id:
+            # Handle game abandonment
+            if game_id in self.active_connections:
+                message_data = data.get("message")
+                if message_data:
+                    await self.broadcast_to_game(game_id, message_data)
+                await self.close_game_connections(game_id)
+        elif action in ["player_disconnect", "player_reconnect"]:
+            # Handle player connection events
+            if game_id in self.active_connections:
+                message_data = data.get("message")
+                if message_data:
+                    # Broadcast the connection event to all clients connected to this game
+                    await self.broadcast_to_game(game_id, message_data)
 
     async def connect(self, websocket: WebSocket, game_id: int, player_id: int):
         await websocket.accept()
@@ -156,18 +180,33 @@ class ConnectionManager:
             if not self.active_connections[game_id]:
                 del self.active_connections[game_id]
             
-        # Remove player connection and schedule disconnect check
+        # Remove player connection
         key = f"{game_id}:{player_id}"
         if key in self.player_game_connections:
             del self.player_game_connections[key]
         
-        # Notify Redis about the disconnection
-        asyncio.create_task(self.redis.publish("game_connections", {
-            "action": "disconnect",
-            "game_id": game_id,
-            "player_id": player_id
-        }))
+        # Create a properly structured disconnection message
+        disconnect_message = PlayerDisconnectedMessage(
+            data=PlayerConnectionEvent(
+                player_id=player_id,
+                game_id=game_id
+            )
+        )
         
+        # Broadcast to other players
+        asyncio.create_task(self.broadcast_to_game(game_id, disconnect_message.dict()))
+        
+        # Notify Redis about the disconnection
+        redis_message = RedisConnectionEvent(
+            action="player_disconnect",
+            game_id=game_id,
+            player_id=player_id,
+            source_id=id(self),
+            message=disconnect_message.dict()
+        )
+        asyncio.create_task(self.redis.publish("game_connections", redis_message.dict()))
+        
+        # Schedule disconnect check
         self.schedule_disconnect_check(game_id, player_id, db)
 
     async def broadcast_to_game(self, game_id: int, message: dict):
@@ -184,7 +223,8 @@ class ConnectionManager:
                 await connection.close(code=1000)  # 1000 is normal closure
             
             # Clean up connections
-            del self.active_connections[game_id]
+            if game_id in self.active_connections:
+                del self.active_connections[game_id]
             
             # Clean up any player-specific connections
             keys_to_remove = [
@@ -196,9 +236,9 @@ class ConnectionManager:
 
     async def handle_disconnect(self, game_id: int, player_id: int, db: Session):
         try:
-            print("waiting 10 seconds")
+            print(f"waiting 10 seconds for player {player_id} to reconnect", flush=True)
             await sleep(10)  # Wait 10 seconds
-            
+            print(f"player {player_id} did not reconnect", flush=True)
             # Check if player reconnected
             key = f"{game_id}:{player_id}"
             if key in self.player_game_connections:
@@ -220,16 +260,23 @@ class ConnectionManager:
                 data=gs.to_response(game)
             )
             
-            # Broadcast locally and via Redis
+            # Broadcast locally
             await self.broadcast_to_game(game_id, close_message.dict())
-            await self.redis.publish("game_updates", {
+            
+            # Notify other processes about the abandonment
+            await self.redis.publish("game_connections", {
+                "action": "game_abandoned",
                 "game_id": game_id,
+                "source_id": id(self),
                 "message": close_message.dict()
             })
 
             # Then close all connections
             await self.close_game_connections(game_id)
+        except Exception as e:
+            print(f"Error disconnecting from game {game_id} for player {player_id}: {e}")
         finally:
+            print(f"disconnecting from game {game_id} for player {player_id}")
             key = f"{game_id}:{player_id}"
             if key in self.disconnect_tasks:
                 del self.disconnect_tasks[key]
@@ -245,6 +292,26 @@ class ConnectionManager:
         if key in self.disconnect_tasks:
             self.disconnect_tasks[key].cancel()
             del self.disconnect_tasks[key]
+            
+            # Create a properly structured reconnection message
+            reconnect_message = PlayerReconnectedMessage(
+                data=PlayerConnectionEvent(
+                    player_id=player_id,
+                    game_id=game_id
+                )
+            )
+        
+            # Broadcast to other players in this game
+            asyncio.create_task(self.broadcast_to_game(game_id, reconnect_message.dict()))
+        
+            # Notify other processes about the reconnection
+            redis_message = RedisConnectionEvent(
+                action="player_reconnect",
+                game_id=game_id,
+                player_id=player_id,
+                message=reconnect_message.dict()
+            )
+            asyncio.create_task(self.redis.publish("game_connections", redis_message.dict()))
 
 # Create instances
 redis_manager = RedisManager()

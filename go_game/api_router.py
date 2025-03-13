@@ -26,7 +26,8 @@ from .schemas import (
     WebSocketMessage,
     DrawOfferRequest,
     DrawOfferResponse,
-    DrawAcceptResponse
+    DrawAcceptResponse,
+    UserInfoResponse
 )
 from .auth import get_current_user, Token, authenticate_user, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, create_refresh_token, validate_token
 from .utils.board_visualizer import visualize_game
@@ -50,7 +51,7 @@ async def startup_event():
     await redis_manager.connect()
     # Start background tasks
     asyncio.create_task(cleanup_stale_challenges())
-    asyncio.create_task(cleanup_stale_games())
+    #asyncio.create_task(cleanup_stale_games())
 
 @router.on_event("shutdown")
 async def shutdown_event():
@@ -79,6 +80,18 @@ async def login(
     )
     refresh_token = create_refresh_token(data={"sub": user.username})
     return Token(access_token=access_token, refresh_token=refresh_token, token_type="bearer")
+
+@router.get("/me", response_model=UserInfoResponse)
+async def get_current_user_info(
+    current_user: models.User = Depends(get_current_user)
+):
+    """Get information about the currently authenticated user"""
+    return UserInfoResponse(
+        id=current_user.id,
+        username=current_user.username,
+        email=current_user.email,
+        is_anonymous=current_user.is_anonymous if hasattr(current_user, 'is_anonymous') else False
+    )
 
 @router.get("/games/{game_id}/visualize")
 async def visualize_game_state(

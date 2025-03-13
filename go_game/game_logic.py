@@ -71,6 +71,8 @@ class GameService:
     def make_move(self, game_id: int, x: int, y: int, player_id: int) -> Dict[str, Any]:
         """Process a move for a given game"""
         game = self.get_game(game_id)
+        if game.status != GameStatus.ACTIVE:
+            raise InvalidMoveError("Game is not active")
         game_state = self.get_game_state(game)
         current_time = datetime.utcnow()
         player_color = StoneColor.BLACK if game.black_player_id == player_id else StoneColor.WHITE

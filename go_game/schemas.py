@@ -1,8 +1,14 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional, Literal, List, Tuple
+from typing import List, Optional, Literal, List, Tuple, Dict, Any, Union
 from datetime import datetime
 from enum import Enum
 from .models import StoneColor, ChallengeStatus, GameStatus
+
+class UserInfoResponse(BaseModel):
+    id: int
+    username: str
+    email: str
+    is_anonymous: bool = False
 
 class WebSocketMessageType(str, Enum):
     GAME_ABANDONED = "game_abandoned"
@@ -13,6 +19,8 @@ class WebSocketMessageType(str, Enum):
     RESIGN = "resign"
     DRAW_OFFER = "draw_offer"
     DRAW_ACCEPTED = "draw_accepted"
+    PLAYER_DISCONNECTED = "player_disconnected"
+    PLAYER_RECONNECTED = "player_reconnected"
 
 
 class GameStateResponse(BaseModel):
@@ -33,7 +41,7 @@ class GameStateResponse(BaseModel):
 
 class WebSocketMessage(BaseModel):
     type: WebSocketMessageType
-    data: GameStateResponse
+    data: Any
 
 class PlayerBase(BaseModel):
     username: str
@@ -141,3 +149,29 @@ class DrawOfferResponse(BaseModel):
 class DrawAcceptResponse(BaseModel):
     status: str
     message: str 
+
+# Connection event messages
+class PlayerConnectionEvent(BaseModel):
+    player_id: int
+    game_id: int
+
+class PlayerDisconnectedMessage(WebSocketMessage):
+    type: WebSocketMessageType = WebSocketMessageType.PLAYER_DISCONNECTED
+    data: PlayerConnectionEvent
+
+class PlayerReconnectedMessage(WebSocketMessage):
+    type: WebSocketMessageType = WebSocketMessageType.PLAYER_RECONNECTED
+    data: PlayerConnectionEvent
+
+# Redis message types
+class RedisConnectionEvent(BaseModel):
+    action: str
+    game_id: int
+    player_id: int
+    message: Optional[Dict] = None
+    source_id: Optional[int] = None
+
+class RedisGameUpdate(BaseModel):
+    game_id: int
+    message: Dict
+    source_id: Optional[int] = None
