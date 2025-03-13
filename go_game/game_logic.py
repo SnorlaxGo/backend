@@ -4,19 +4,23 @@ from .schemas import GameStateResponse
 from .database import SessionLocal
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+from .loggers import game_logger as logger  # Import the logger
 
 class GameService:
     def __init__(self, db: Session):
         self.db = db
     
     def get_game(self, game_id: int) -> Game:
+        logger.debug("Fetching game with ID: %d", game_id)
         game = self.db.query(Game).filter(Game.id == game_id).first()
         if not game:
+            logger.warning("Game not found: %d", game_id)
             raise Exception("Game not found")
         return game
     
     def to_response(self, game, player_color: Optional[StoneColor] = None) -> GameStateResponse:
         """Convert internal game state to API response format"""
+        logger.debug("Converting game %d to response format", game.id)
         result = self.get_game_state(game)
         return GameStateResponse(
             success=True,
@@ -31,6 +35,7 @@ class GameService:
         )
     def get_game_state(self, game: Game) -> dict:
         """Pure function to compute game state from a game object"""
+        logger.debug("Computing game state for game %d", game.id)
         # Get last move efficiently
         last_move = (
             self.db.query(Move)
@@ -43,6 +48,7 @@ class GameService:
         if game.board_state:
             board = game.board_state
         else:
+            logger.debug("Creating new board for game %d with size %d", game.id, game.board_size)
             board = [[0 for _ in range(game.board_size)] for _ in range(game.board_size)]
             game.board_state = board
 
@@ -70,69 +76,84 @@ class GameService:
     
     def make_move(self, game_id: int, x: int, y: int, player_id: int) -> Dict[str, Any]:
         """Process a move for a given game"""
+        logger.info("Processing move for game %d: player %d at position (%d, %d)", 
+                   game_id, player_id, x, y)
+        
         game = self.get_game(game_id)
         if game.status != GameStatus.ACTIVE:
+            logger.warning("Attempted move on inactive game %d (status: %s)", 
+                          game_id, game.status)
             raise InvalidMoveError("Game is not active")
+            
         game_state = self.get_game_state(game)
         current_time = datetime.utcnow()
         player_color = StoneColor.BLACK if game.black_player_id == player_id else StoneColor.WHITE
-        print(f"player_color: {player_color}")
+        logger.debug("Player color: %s", player_color)
+        
         # Verify it's the player's turn
-        print(f"game.move_count: {game.move_count}, player_color: {player_color}, game.is_black_turn: {game.is_black_turn}")
+        logger.debug("Game %d: move_count=%d, player_color=%s, is_black_turn=%s", 
+                    game_id, game.move_count, player_color, game.is_black_turn)
+                    
         if (game.is_black_turn and player_color == StoneColor.WHITE) or \
            (not game.is_black_turn and player_color == StoneColor.BLACK):
+            logger.warning("Not player's turn in game %d: player=%d, color=%s, is_black_turn=%s", 
+                          game_id, player_id, player_color, game.is_black_turn)
             raise InvalidMoveError("Not your turn")
 
         # Check if player has exceeded their time limit
-
         if game.time_control:
             black_time = game.black_time_remaining or 0
             white_time = game.white_time_remaining or 0
             
             if game.is_black_turn and black_time >= game.time_control:
+                logger.warning("Black player out of time in game %d: %d seconds used", 
+                              game_id, black_time)
                 raise InvalidMoveError("Black has run out of time")
             elif not game.is_black_turn and white_time >= game.time_control:
+                logger.warning("White player out of time in game %d: %d seconds used", 
+                              game_id, white_time)
                 raise InvalidMoveError("White has run out of time")
 
         # Process the move
-        result = process_move(game_state["board"], x, y, player_color, game_state["last_move"])
-        if not result["success"]:
-            raise InvalidMoveError(result.get("error", "Invalid move"))
+        try:
+            result = process_move(game_state["board"], x, y, player_color, game_state["last_move"])
+            if not result["success"]:
+                logger.warning("Invalid move in game %d: %s", game_id, result.get("error", "Unknown error"))
+                raise InvalidMoveError(result.get("error", "Invalid move"))
+                
+            logger.info("Move successful in game %d: captured %d stones", 
+                       game_id, len(result["captured"]))
+                       
+            # Create new move record
+            new_move = Move(
+                game_id=game_id,
+                move_number=game.move_count,
+                x=x,
+                y=y,
+                color=player_color,
+                captured_positions=result["captured"],
+                resulting_board_state=result["board"]
+            )
+            self.db.add(new_move)
 
-        # Create new move record
-        
-        new_move = Move(
-            game_id=game_id,
-            move_number=game.move_count,
-            x=x,
-            y=y,
-            color=player_color,
-            captured_positions=result["captured"],
-            resulting_board_state=result["board"]
-        )
-        self.db.add(new_move)
-
-        # Update game state
-        game.board_state = result["board"]
-        game.black_captures += result["black_captures"]
-        game.white_captures += result["white_captures"]
-        game.last_move_at = current_time
-        game.update_time_remaining(current_time)
-        game.move_count += 1
-        self.db.add(game)
-        self.db.commit()
-
-        return GameStateResponse(
-            success=True,
-            board=result["board"],
-            captured=result["captured"],
-            black_captures=game.black_captures,
-            white_captures=game.white_captures,
-            black_time_used=game.black_time_remaining,
-            white_time_used=game.white_time_remaining,
-            color=StoneColor.WHITE.value if player_color == StoneColor.BLACK else StoneColor.BLACK.value,
-            status=game.status
-        )
+            # Update game state
+            game.board_state = result["board"]
+            game.black_captures += result["black_captures"]
+            game.white_captures += result["white_captures"]
+            game.last_move_at = current_time
+            game.update_time_remaining(current_time)
+            game.move_count += 1
+            self.db.add(game)
+            self.db.commit()
+            
+            logger.debug("Game %d updated: move_count=%d, black_captures=%d, white_captures=%d",
+                        game_id, game.move_count, game.black_captures, game.white_captures)
+                        
+            return self.to_response(game)
+            
+        except Exception as e:
+            logger.error("Error processing move in game %d: %s", game_id, str(e), exc_info=True)
+            raise
 
 class InvalidMoveError(Exception):
     code = "INVALID_MOVE"
@@ -168,7 +189,7 @@ def validate_move(board: List[List[StoneColor]], x: int, y: int, color: StoneCol
             raise InvalidMoveError(f"It is not {color.name}'s turn")
     
     elif color != StoneColor.WHITE:
-        print(f"color: {color}")
+        logger.debug("First move color: %s", color)
         raise InvalidMoveError("White must make the first move")
 
     if not board:
@@ -189,12 +210,11 @@ def process_move(board: List[List[StoneColor]], x: int, y: int, color: StoneColo
     """Pure game logic for processing a move, without database interactions"""
     # Create a copy of the board to avoid modifying the original
     if board[y][x] != 0:
-        print(f"board[y][x]: {board[y][x]}")
+        logger.debug("board[y][x]: %s", board[y][x])
         raise OccupiedPointError(f"Position ({x}, {y}) is already occupied")
     
     new_board = [row[:] for row in board]
-    print("old board:")
-    print(board)
+    logger.debug("old board: %s", board)
     # Place the stone
     new_board[y][x] = color.value
     
@@ -207,8 +227,7 @@ def process_move(board: List[List[StoneColor]], x: int, y: int, color: StoneColo
     # Calculate captures for each color
     black_captures = len(captured) if color == StoneColor.BLACK else 0
     white_captures = len(captured) if color == StoneColor.WHITE else 0
-    print("new_board:")
-    print(new_board)
+    logger.debug("new_board: %s", new_board)
     return {
         "board": new_board,
         "captured": captured,
@@ -285,7 +304,7 @@ def has_liberties(board: List[List[StoneColor]], x: int, y: int):
             nx, ny = cx + dx, cy + dy
             if 0 <= nx < len(board) and 0 <= ny < len(board):
                 if board[ny][nx] == 0:
-                    print(f"ny, nx: {ny}, {nx}, color: {board[ny][nx]}")
+                    logger.debug(f"Liberty found at {ny}, {nx}, color: {board[ny][nx]}")
                     return True
                 if board[ny][nx] == color and (nx, ny) not in visited:
                     stack.append((nx, ny))
@@ -293,9 +312,9 @@ def has_liberties(board: List[List[StoneColor]], x: int, y: int):
 
 def capture_stones(board: List[List[StoneColor]], x: int, y: int, color: StoneColor):
     captured = []
-    print(f"x, y, color: {x}, {y}, {color}")
+    logger.debug(f"Checking captures at {x}, {y}, color: {color}")
     opponent_color = StoneColor.WHITE if color == StoneColor.BLACK.value else StoneColor.BLACK
-    print(f"opponent_color: {opponent_color}")
+    logger.debug(f"Opponent color: {opponent_color}")
     for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
         nx, ny = x + dx, y + dy
         if 0 <= nx < len(board) and 0 <= ny < len(board) and board[ny][nx] == opponent_color.value:

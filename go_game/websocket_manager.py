@@ -9,6 +9,7 @@ from .schemas import WebSocketMessage, WebSocketMessageType, PlayerConnectionEve
 from sqlalchemy.orm import Session
 from .game_logic import GameService
 from .config import settings
+from .logging_config import logger
 
 class RedisManager:
     """Handles Redis pub/sub for WebSocket communication"""
@@ -21,40 +22,60 @@ class RedisManager:
     
     async def connect(self):
         """Connect to Redis"""
-        self.redis_conn = await redis.from_url(self.redis_url)
-        self.pubsub = self.redis_conn.pubsub()
-        
-
+        logger.info("Connecting to Redis at %s", self.redis_url)
+        try:
+            self.redis_conn = await redis.from_url(self.redis_url)
+            self.pubsub = self.redis_conn.pubsub()
+            logger.info("Successfully connected to Redis")
+        except Exception as e:
+            logger.error("Failed to connect to Redis: %s", str(e), exc_info=True)
+            raise
     
     async def disconnect(self):
         """Disconnect from Redis"""
-        if self.listener_task:
-            self.listener_task.cancel()
-        
-        if self.pubsub:
-            await self.pubsub.unsubscribe()
-            await self.pubsub.close()
-        
-        if self.redis_conn:
-            await self.redis_conn.close()
+        logger.info("Disconnecting from Redis")
+        try:
+            if self.listener_task:
+                self.listener_task.cancel()
+            
+            if self.pubsub:
+                await self.pubsub.unsubscribe()
+                await self.pubsub.close()
+            
+            if self.redis_conn:
+                await self.redis_conn.close()
+            logger.info("Successfully disconnected from Redis")
+        except Exception as e:
+            logger.error("Error disconnecting from Redis: %s", str(e), exc_info=True)
     
     async def publish(self, channel: str, message: Any):
         """Publish a message to a Redis channel"""
         if not self.redis_conn:
+            logger.debug("Redis connection not established, connecting now")
             await self.connect()
         
-        await self.redis_conn.publish(channel, json.dumps(message))
+        try:
+            await self.redis_conn.publish(channel, json.dumps(message))
+            logger.debug("Published message to channel %s", channel)
+        except Exception as e:
+            logger.error("Failed to publish to Redis channel %s: %s", channel, str(e), exc_info=True)
+            raise
     
     async def subscribe(self, channel: str, callback):
         """Subscribe to a Redis channel"""
         if not self.redis_conn:
+            logger.debug("Redis connection not established, connecting now")
             await self.connect()
         
-        await self.pubsub.subscribe(**{channel: callback})
-        if not self.listener_task or self.listener_task.done():
-            self.listener_task = asyncio.create_task(self.pubsub.run())
-        
-
+        try:
+            logger.info("Subscribing to Redis channel: %s", channel)
+            await self.pubsub.subscribe(**{channel: callback})
+            if not self.listener_task or self.listener_task.done():
+                self.listener_task = asyncio.create_task(self.pubsub.run())
+                logger.debug("Started Redis listener task")
+        except Exception as e:
+            logger.error("Failed to subscribe to Redis channel %s: %s", channel, str(e), exc_info=True)
+            raise
 
 class ChallengeConnectionManager:
     def __init__(self, redis_manager: RedisManager = None):
@@ -113,18 +134,18 @@ class ConnectionManager:
     
     async def start(self):
         """Start the Redis connection and subscribe to game channels"""
-        print("Starting Redis connection")
+        logger.info("Starting Redis connection")
         await self.redis.connect()
-        print("Subscribing to game_updates")
+        logger.info("Subscribing to game_updates")
         await self.redis.subscribe("game_updates", self._handle_game_update)
-        print("Subscribing to disconnect_requests")
+        logger.info("Subscribing to disconnect_requests")
         await self.redis.subscribe("game_connections", self._handle_connection_events)
-        print("completed")
+        logger.info("ConnectionManager startup completed")
     
     async def _handle_game_update(self, message):
         """Handle game updates from Redis"""
         data = json.loads(message["data"])
-        print(f"Received game update: {data}")
+        logger.debug(f"Received game update: {data}")
         game_id = data.get("game_id")
         source_id = data.get("source_id")
         if source_id == id(self):
@@ -139,12 +160,12 @@ class ConnectionManager:
         game_id = data.get("game_id")
         source_id = data.get("source_id")
         if source_id == id(self):
-            print(f"ignoring message from self: {data}", flush=True)
+            logger.debug(f"Ignoring message from self: {data}")
             return
         
-        print(f"Received connection event: {action} for game {game_id}", flush=True)
-        print(f"source_id: {source_id}", flush=True)
-        print(f"id(self): {id(self)}", flush=True)
+        logger.info(f"Received connection event: {action} for game {game_id}")
+        logger.debug(f"source_id: {source_id}")
+        logger.debug(f"id(self): {id(self)}")
         if action == "game_abandoned" and game_id:
             # Handle game abandonment
             if game_id in self.active_connections:
@@ -162,7 +183,7 @@ class ConnectionManager:
 
     async def connect(self, websocket: WebSocket, game_id: int, player_id: int):
         await websocket.accept()
-        print(f"Connected to game {game_id} for player {player_id}")
+        logger.info(f"Connected to game {game_id} for player {player_id}")
         if game_id not in self.active_connections:
             self.active_connections[game_id] = []
         self.active_connections[game_id].append(websocket)
@@ -210,7 +231,7 @@ class ConnectionManager:
         self.schedule_disconnect_check(game_id, player_id, db)
 
     async def broadcast_to_game(self, game_id: int, message: dict):
-        print(f"Broadcasting to game {game_id}: {message}")
+        logger.debug(f"Broadcasting to game {game_id}: {message}")
         if game_id in self.active_connections:
             for connection in self.active_connections[game_id]:
                 await connection.send_json(message)
@@ -236,9 +257,9 @@ class ConnectionManager:
 
     async def handle_disconnect(self, game_id: int, player_id: int, db: Session):
         try:
-            print(f"waiting 10 seconds for player {player_id} to reconnect", flush=True)
+            logger.info(f"waiting 10 seconds for player {player_id} to reconnect")
             await sleep(10)  # Wait 10 seconds
-            print(f"player {player_id} did not reconnect", flush=True)
+            logger.info(f"player {player_id} did not reconnect")
             # Check if player reconnected
             key = f"{game_id}:{player_id}"
             if key in self.player_game_connections:
@@ -274,9 +295,9 @@ class ConnectionManager:
             # Then close all connections
             await self.close_game_connections(game_id)
         except Exception as e:
-            print(f"Error disconnecting from game {game_id} for player {player_id}: {e}")
+            logger.error(f"Error disconnecting from game {game_id} for player {player_id}: {e}")
         finally:
-            print(f"disconnecting from game {game_id} for player {player_id}")
+            logger.info(f"disconnecting from game {game_id} for player {player_id}")
             key = f"{game_id}:{player_id}"
             if key in self.disconnect_tasks:
                 del self.disconnect_tasks[key]

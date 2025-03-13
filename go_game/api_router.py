@@ -38,6 +38,7 @@ import random
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from jwt import PyJWTError
+from .loggers import api_logger as logger  # Import the logger
 
 # Create router instead of app
 router = APIRouter()
@@ -47,19 +48,25 @@ models.Base.metadata.create_all(bind=engine)
 
 @router.on_event("startup")
 async def startup_event():
+    logger.info("Starting API router")
     # Initialize Redis connection
     await redis_manager.connect()
     # Start background tasks
+    logger.info("Starting background tasks")
     asyncio.create_task(cleanup_stale_challenges())
     #asyncio.create_task(cleanup_stale_games())
+    logger.info("API router startup complete")
 
 @router.on_event("shutdown")
 async def shutdown_event():
+    logger.info("Shutting down API router")
     # Close Redis connection
     await redis_manager.disconnect()
+    logger.info("API router shutdown complete")
 
 @router.get("/")
 async def root():
+    logger.debug("Root endpoint accessed")
     return {"message": "Welcome to the Go Game API"}
 
 @router.post("/token")
@@ -67,8 +74,10 @@ async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db)
 ) -> Token:
+    logger.info("Login attempt for user: %s", form_data.username)
     user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
+        logger.warning("Failed login attempt for user: %s", form_data.username)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -79,6 +88,7 @@ async def login(
         data={"sub": user.username}, expires_delta=access_token_expires
     )
     refresh_token = create_refresh_token(data={"sub": user.username})
+    logger.info("Successful login for user: %s", user.username)
     return Token(access_token=access_token, refresh_token=refresh_token, token_type="bearer")
 
 @router.get("/me", response_model=UserInfoResponse)
@@ -127,7 +137,8 @@ async def create_open_challenge(challenge: OpenChallenge,
                           current_user: models.User = Depends(get_current_user),
                           db: Session = Depends(get_db)):
     # First, check for matching open challenges
-    print(f"Creating open challenge for user {current_user.id} with board size {challenge.board_size} and time control {challenge.time_control}")
+    logger.info("Creating open challenge for user %d with board size %d and time control %d", 
+                current_user.id, challenge.board_size, challenge.time_control)
     matching_challenge = db.query(models.Challenge).filter(
         models.Challenge.status == "open",
         models.Challenge.board_size == challenge.board_size,
@@ -317,11 +328,14 @@ async def make_game_move(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ) -> GameMoveSuccessResponse:
+    logger.info("Move request for game %d by user %s: (%d, %d)", 
+               game_id, current_user.username, move.x, move.y)
     try:
         service = GameService(db)
         result = service.make_move(game_id, move.x, move.y, current_user.id)
         
         # Broadcast the move via Redis
+        logger.debug("Broadcasting move for game %d via Redis", game_id)
         await redis_manager.publish("game_updates", {
             "game_id": game_id,
             "message": WebSocketMessage(
@@ -330,23 +344,24 @@ async def make_game_move(
             ).dict()
         })
         
+        logger.info("Move successful for game %d by user %s", game_id, current_user.username)
         return {"status": "success"}
         
     except InvalidMoveError as e:
-        print(f"Invalid move: {e}")
-        print(traceback.format_exc())
+        logger.warning("Invalid move in game %d by user %s: %s", 
+                      game_id, current_user.username, str(e))
         raise HTTPException(status_code=400, detail=str(e))
     except KoViolationError as e:
-        print(f"Ko violation: {e}")
-        print(traceback.format_exc())
+        logger.warning("Ko violation in game %d by user %s: %s", 
+                      game_id, current_user.username, str(e))
         raise HTTPException(status_code=400, detail=str(e))
     except SuicideMoveError as e:
-        print(f"Suicide move: {e}")
-        print(traceback.format_exc())
+        logger.warning("Suicide move in game %d by user %s: %s", 
+                      game_id, current_user.username, str(e))
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        print(f"Error making move: {e}")
-        print(traceback.format_exc())
+        logger.error("Error making move in game %d by user %s: %s", 
+                    game_id, current_user.username, str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/game/{game_id}/state")
@@ -377,25 +392,34 @@ async def resign_game(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    logger.info("Resignation request for game %d by user %s", game_id, current_user.username)
     gs = GameService(db)
     game = gs.get_game(game_id)
     if not game:
+        logger.warning("Resignation failed: Game %d not found", game_id)
         raise HTTPException(status_code=404, detail="Game not found")
     
     # Verify the user is a player in this game
     if current_user.id not in [game.black_player_id, game.white_player_id]:
+        logger.warning("Unauthorized resignation attempt for game %d by user %s", 
+                      game_id, current_user.username)
         raise HTTPException(status_code=403, detail="Not a player in this game")
+        
     is_black_player = current_user.id == game.black_player_id
     game.status = GameStatus.BLACK_WON_RESIGNATION if not is_black_player else GameStatus.WHITE_WON_RESIGNATION
     game.resigned = True
     
     db.commit()
+    logger.info("Game %d: %s player resigned", 
+               game_id, "Black" if is_black_player else "White")
+               
     message = WebSocketMessage(
         type=WebSocketMessageType.RESIGN,
         data=gs.to_response(game)
     )
 
     # Broadcast via Redis
+    logger.debug("Broadcasting resignation for game %d via Redis", game_id)
     await redis_manager.publish("game_updates", {
         "game_id": game.id,
         "message": message.dict()

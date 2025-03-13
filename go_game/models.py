@@ -1,10 +1,11 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, Enum, JSON, DateTime, Boolean
+from sqlalchemy import Column, Integer, String, ForeignKey, Enum, JSON, DateTime, Boolean, UniqueConstraint
 from sqlalchemy.orm import relationship
 from enum import IntEnum
 from datetime import datetime
 from typing import Optional
 
 from .database import Base
+from .loggers import game_logger as logger  # Import the logger
 
 class ChallengeStatus(str, Enum):
     MATCHED = "matched"
@@ -88,40 +89,57 @@ class Game(Base):
         """
         Offer a draw. Returns True if the offer was accepted, False otherwise.
         """
+        logger.info("Draw offered in game %d by player %d", self.id, player_id)
+        
         if self.status != GameStatus.ACTIVE:
+            logger.warning("Draw offer rejected: game %d is not active (status: %s)", 
+                          self.id, self.status)
             return False
         
         # Check if player is in the game
         if player_id not in (self.black_player_id, self.white_player_id):
+            logger.warning("Draw offer rejected: player %d is not in game %d", 
+                          player_id, self.id)
             return False
             
         self.draw_offered_by_id = player_id
         self.draw_offered_at = datetime.utcnow()
+        logger.info("Draw offer recorded in game %d", self.id)
         return False
 
     def accept_draw(self, player_id: int) -> bool:
         """
         Accept a draw offer. Returns True if successful.
         """
+        logger.info("Draw acceptance attempt in game %d by player %d", self.id, player_id)
+        
         if not self.draw_offered_by_id or self.status != GameStatus.ACTIVE:
+            logger.warning("Draw acceptance rejected: no active draw offer in game %d", self.id)
             return False
             
         # Can't accept your own draw offer
         if player_id == self.draw_offered_by_id:
+            logger.warning("Draw acceptance rejected: player %d trying to accept their own offer", 
+                          player_id)
             return False
             
         # Check if player is in the game
         if player_id not in (self.black_player_id, self.white_player_id):
+            logger.warning("Draw acceptance rejected: player %d is not in game %d", 
+                          player_id, self.id)
             return False
             
         self.status = GameStatus.DRAW
         self.clear_draw_offer()
+        logger.info("Draw accepted in game %d", self.id)
         return True
     
     def clear_draw_offer(self) -> None:
         """Clear any existing draw offer"""
-        self.draw_offered_by_id = None
-        self.draw_offered_at = None
+        if self.draw_offered_by_id:
+            logger.debug("Clearing draw offer in game %d", self.id)
+            self.draw_offered_by_id = None
+            self.draw_offered_at = None
 
     def update_time_remaining(self, current_time: datetime = None) -> None:
         """Update time used by the player who just moved"""
@@ -144,20 +162,27 @@ class Game(Base):
             if self.white_last_move_at:
                 elapsed = int((current_time - self.black_last_move_at).total_seconds())
                 self.white_time_remaining = (self.white_time_remaining or 0) + elapsed
+                logger.debug("Game %d: Updated white time remaining to %d seconds", 
+                            self.id, self.white_time_remaining)
             self.white_last_move_at = current_time
         else:  # Black just moved
             if self.black_last_move_at:
                 elapsed = int((current_time - self.white_last_move_at).total_seconds())
                 self.black_time_remaining = (self.black_time_remaining or 0) + elapsed
+                logger.debug("Game %d: Updated black time remaining to %d seconds", 
+                            self.id, self.black_time_remaining)
             self.black_last_move_at = current_time
 
         # Check for timeout
         if (self.time_control and 
             (self.black_time_remaining >= self.time_control or 
              self.white_time_remaining >= self.time_control)):
-            self.status = GameStatus.BLACK_WON_TIMEOUT if self.is_black_turn else GameStatus.WHITE_WON_TIMEOUT
+            timeout_status = GameStatus.BLACK_WON_TIMEOUT if self.is_black_turn else GameStatus.WHITE_WON_TIMEOUT
+            logger.info("Game %d: Player timed out, setting status to %s", self.id, timeout_status)
+            self.status = timeout_status
         
-        print(f"black_time_remaining: {self.black_time_remaining}, white_time_remaining: {self.white_time_remaining}")
+        logger.debug("Game %d: black_time_remaining=%d, white_time_remaining=%d", 
+                    self.id, self.black_time_remaining, self.white_time_remaining)
 
     @property
     def is_black_turn(self) -> bool:
@@ -173,10 +198,13 @@ class User(Base):
     hashed_password = Column(String)
     role = Column(String, default=UserRole.USER)
     is_anonymous = Column(Boolean, default=False)
+    # Replace single elo_rating with relationship to multiple ratings
+    #ratings = relationship("PlayerRating", back_populates="user")
     
-    # Keep the game relationships, but rename from Player
+    # Keep the game relationships
     games_as_black = relationship("Game", foreign_keys=[Game.black_player_id], back_populates="black_player")
     games_as_white = relationship("Game", foreign_keys=[Game.white_player_id], back_populates="white_player")
+
 
 class StoneColor(IntEnum):
     BLACK = 1
@@ -205,3 +233,27 @@ class Challenge(Base):
     status = Column(String)  # "open", "pending", "matched", "accepted", "expired"
     created_at = Column(DateTime, default=datetime.utcnow)
     is_anonymous = Column(Boolean, default=False)
+
+"""
+class PlayerRating(Base):
+    __tablename__ = "player_ratings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    board_size = Column(Integer, Enum(BoardSize))  # Track ratings for different board sizes
+    time_control = Column(Integer, Enum(TimeControl), nullable=True)  # Optional time control category
+    rating = Column(Integer, default=1500)
+    games_played = Column(Integer, default=0)
+    wins = Column(Integer, default=0)
+    losses = Column(Integer, default=0)
+    draws = Column(Integer, default=0)
+    last_updated = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationship to User
+    user = relationship("User", back_populates="ratings")
+    
+    __table_args__ = (
+        # Ensure each user has only one rating per board size and time control combination
+        UniqueConstraint('user_id', 'board_size', 'time_control', name='unique_user_rating'),
+    )
+"""
