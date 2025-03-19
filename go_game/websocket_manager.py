@@ -11,6 +11,22 @@ from .game_logic import GameService
 from .config import settings
 from .logging_config import logger
 
+def get_game_update_channel(game_id: int) -> str:
+    """Get the Redis channel name for game updates"""
+    return f"game_updates:{game_id}"
+
+def get_game_connection_channel(game_id: int) -> str:
+    """Get the Redis channel name for game connection events"""
+    return f"game_connections:{game_id}"
+
+def get_challenge_update_channel(challenge_id: str) -> str:
+    """Get the Redis channel name for challenge updates"""
+    return f"challenge_updates:{challenge_id}"
+
+def get_challenge_connection_channel(challenge_id: str) -> str:
+    """Get the Redis channel name for challenge connection events"""
+    return f"challenge_connections:{challenge_id}"
+
 class RedisManager:
     """Handles Redis pub/sub for WebSocket communication"""
     
@@ -26,6 +42,7 @@ class RedisManager:
         try:
             self.redis_conn = await redis.from_url(self.redis_url)
             self.pubsub = self.redis_conn.pubsub()
+            self.listener_task = asyncio.create_task(self.pubsub.run())
             logger.info("Successfully connected to Redis")
         except Exception as e:
             logger.error("Failed to connect to Redis: %s", str(e), exc_info=True)
@@ -70,9 +87,6 @@ class RedisManager:
         try:
             logger.info("Subscribing to Redis channel: %s", channel)
             await self.pubsub.subscribe(**{channel: callback})
-            if not self.listener_task or self.listener_task.done():
-                self.listener_task = asyncio.create_task(self.pubsub.run())
-                logger.debug("Started Redis listener task")
         except Exception as e:
             logger.error("Failed to subscribe to Redis channel %s: %s", channel, str(e), exc_info=True)
             raise
@@ -131,15 +145,12 @@ class ConnectionManager:
         self.player_game_connections: Dict[str, WebSocket] = {}  # "game_id:player_id" -> websocket
         self.disconnect_tasks: Dict[str, Task] = {}  # "game_id:player_id" -> task
         self.redis = redis_manager or RedisManager()
+        self.subscribed_games = set()  # Track which game channels we're subscribed to
     
     async def start(self):
-        """Start the Redis connection and subscribe to game channels"""
+        """Start the Redis connection"""
         logger.info("Starting Redis connection")
         await self.redis.connect()
-        logger.info("Subscribing to game_updates")
-        await self.redis.subscribe("game_updates", self._handle_game_update)
-        logger.info("Subscribing to disconnect_requests")
-        await self.redis.subscribe("game_connections", self._handle_connection_events)
         logger.info("ConnectionManager startup completed")
     
     async def _handle_game_update(self, message):
@@ -153,8 +164,8 @@ class ConnectionManager:
         if game_id and game_id in self.active_connections:
             await self.broadcast_to_game(game_id, data["message"])
     
-    async def _handle_connection_events(self, message):
-        """Handle connection events from Redis"""
+    async def _handle_game_connection(self, message):
+        """Handle connection events from Redis for a specific game"""
         data = json.loads(message["data"])
         action = data.get("action")
         game_id = data.get("game_id")
@@ -164,8 +175,7 @@ class ConnectionManager:
             return
         
         logger.info(f"Received connection event: {action} for game {game_id}")
-        logger.debug(f"source_id: {source_id}")
-        logger.debug(f"id(self): {id(self)}")
+        
         if action == "game_abandoned" and game_id:
             # Handle game abandonment
             if game_id in self.active_connections:
@@ -184,6 +194,16 @@ class ConnectionManager:
     async def connect(self, websocket: WebSocket, game_id: int, player_id: int):
         await websocket.accept()
         logger.info(f"Connected to game {game_id} for player {player_id}")
+        
+        # Subscribe to game-specific channels if not already subscribed
+        if game_id not in self.subscribed_games:
+            game_update_channel = get_game_update_channel(game_id)
+            game_connection_channel = get_game_connection_channel(game_id)
+            await self.redis.subscribe(game_update_channel, self._handle_game_update)
+            await self.redis.subscribe(game_connection_channel, self._handle_game_connection)
+            self.subscribed_games.add(game_id)
+            logger.info(f"Subscribed to channels for game {game_id}")
+        
         if game_id not in self.active_connections:
             self.active_connections[game_id] = []
         self.active_connections[game_id].append(websocket)
@@ -192,14 +212,16 @@ class ConnectionManager:
         key = f"{game_id}:{player_id}"
         self.player_game_connections[key] = websocket
         await self.cancel_disconnect_check(game_id, player_id)
-        
-
+        logger.info(f"player_game_connections: {self.player_game_connections}")
+        logger.info(f"active_connections: {self.active_connections}")
 
     def disconnect(self, websocket: WebSocket, game_id: int, player_id: int, db: Session):
         if game_id in self.active_connections and websocket in self.active_connections[game_id]:
             self.active_connections[game_id].remove(websocket)
             if not self.active_connections[game_id]:
                 del self.active_connections[game_id]
+                # We could unsubscribe from the game channels here, but keeping subscriptions
+                # active for a while might be beneficial for reconnections
             
         # Remove player connection
         key = f"{game_id}:{player_id}"
@@ -217,7 +239,7 @@ class ConnectionManager:
         # Broadcast to other players
         asyncio.create_task(self.broadcast_to_game(game_id, disconnect_message.dict()))
         
-        # Notify Redis about the disconnection
+        # Notify Redis about the disconnection - use game-specific channel
         redis_message = RedisConnectionEvent(
             action="player_disconnect",
             game_id=game_id,
@@ -225,7 +247,7 @@ class ConnectionManager:
             source_id=id(self),
             message=disconnect_message.dict()
         )
-        asyncio.create_task(self.redis.publish("game_connections", redis_message.dict()))
+        asyncio.create_task(self.redis.publish(get_game_connection_channel(game_id), redis_message.dict()))
         
         # Schedule disconnect check
         self.schedule_disconnect_check(game_id, player_id, db)
@@ -254,6 +276,10 @@ class ConnectionManager:
             ]
             for key in keys_to_remove:
                 del self.player_game_connections[key]
+            
+            # Remove from subscribed games
+            if game_id in self.subscribed_games:
+                self.subscribed_games.remove(game_id)
 
     async def handle_disconnect(self, game_id: int, player_id: int, db: Session):
         try:
@@ -284,8 +310,8 @@ class ConnectionManager:
             # Broadcast locally
             await self.broadcast_to_game(game_id, close_message.dict())
             
-            # Notify other processes about the abandonment
-            await self.redis.publish("game_connections", {
+            # Notify other processes about the abandonment - use game-specific channel
+            await self.redis.publish(get_game_connection_channel(game_id), {
                 "action": "game_abandoned",
                 "game_id": game_id,
                 "source_id": id(self),
@@ -325,14 +351,14 @@ class ConnectionManager:
             # Broadcast to other players in this game
             asyncio.create_task(self.broadcast_to_game(game_id, reconnect_message.dict()))
         
-            # Notify other processes about the reconnection
+            # Notify other processes about the reconnection - use game-specific channel
             redis_message = RedisConnectionEvent(
                 action="player_reconnect",
                 game_id=game_id,
                 player_id=player_id,
                 message=reconnect_message.dict()
             )
-            asyncio.create_task(self.redis.publish("game_connections", redis_message.dict()))
+            asyncio.create_task(self.redis.publish(f"game_connections:{game_id}", redis_message.dict()))
 
 # Create instances
 redis_manager = RedisManager()

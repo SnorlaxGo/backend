@@ -61,12 +61,15 @@ async def handle_game_socket(websocket: WebSocket,
                 data=service.to_response(game)
             )
             await websocket.send_json(message.dict())
-            logger.debug("Initial game state sent for game %d", game_id)
+            logger.info("Initial game state sent for game %d", game_id)
+        except Exception as e:
+            logger.error("Error sending initial game state for game %d: %s", game_id, str(e), exc_info=True)
         finally:
             db.close()
 
-        logger.debug("Waiting for disconnect from game %d", game_id)
+        logger.info("Waiting for disconnect from game %d", game_id)
         await websocket.receive_text()  # Just wait for disconnect
+        logger.info("Disconnected from game %d", game_id)
         
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected from game %d for user %s", 
@@ -75,6 +78,7 @@ async def handle_game_socket(websocket: WebSocket,
     except Exception as e:
         logger.error("Error in WebSocket connection for game %d: %s", 
                     game_id, str(e), exc_info=True)
+        manager.disconnect(websocket, game_id, current_user.id, db)
 
 @router.websocket("/ws/challenge/{challenge_id}")
 async def challenge_status(websocket: WebSocket, challenge_id: int):

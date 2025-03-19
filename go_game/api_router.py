@@ -8,7 +8,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 import go_game.models as models
 from .game_logic import GameService, InvalidMoveError, KoViolationError, SuicideMoveError
 from .models import StoneColor, GameStatus, TimeControl
-from .websocket_manager import redis_manager
+from .websocket_manager import redis_manager, get_game_update_channel
 
 from .schemas import (
     GameStateResponse,
@@ -336,7 +336,7 @@ async def make_game_move(
         
         # Broadcast the move via Redis
         logger.debug("Broadcasting move for game %d via Redis", game_id)
-        await redis_manager.publish("game_updates", {
+        await redis_manager.publish(get_game_update_channel(game_id), {
             "game_id": game_id,
             "message": WebSocketMessage(
                 type=WebSocketMessageType.GAME_STATE,
@@ -420,7 +420,7 @@ async def resign_game(
 
     # Broadcast via Redis
     logger.debug("Broadcasting resignation for game %d via Redis", game_id)
-    await redis_manager.publish("game_updates", {
+    await redis_manager.publish(get_game_update_channel(game_id), {
         "game_id": game.id,
         "message": message.dict()
     })
