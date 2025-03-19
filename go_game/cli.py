@@ -27,5 +27,25 @@ def reset_db():
         models.Base.metadata.create_all(bind=engine)
         click.echo("Database reset complete!")
 
+@cli.command()
+@click.argument('username')
+@click.argument('password')
+def add_user(username, password):
+    """Add a new user with the given username and password"""
+    from .models import User
+    db = SessionLocal()
+    try:
+        user = User(username=username)
+        user.set_password(password)
+        db.add(user)
+        db.commit()
+        click.echo(f"User {username} created successfully!")
+    except Exception as e:
+        db.rollback()
+        click.echo(f"Error creating user: {str(e)}")
+    finally:
+        db.close()
+
+
 if __name__ == '__main__':
     cli() 
