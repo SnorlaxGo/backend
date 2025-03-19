@@ -1,7 +1,7 @@
 import click
 from .database import SessionLocal, engine
 from . import models
-
+from .auth import get_password_hash
 @click.group()
 def cli():
     pass
@@ -28,15 +28,19 @@ def reset_db():
         click.echo("Database reset complete!")
 
 @cli.command()
+@click.argument('email')
 @click.argument('username')
 @click.argument('password')
-def add_user(username, password):
+def add_user(email, username, password):
     """Add a new user with the given username and password"""
-    from .models import User
     db = SessionLocal()
     try:
-        user = User(username=username)
-        user.set_password(password)
+        user = models.User(
+            email=email,
+            username=username,
+            role=models.UserRole.USER,
+            hashed_password=get_password_hash(password)
+        )
         db.add(user)
         db.commit()
         click.echo(f"User {username} created successfully!")
