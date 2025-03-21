@@ -14,13 +14,9 @@ def get_game_connection_channel(game_id: int) -> str:
     """Get the Redis channel name for game connection events"""
     return f"game_connections:{game_id}"
 
-def get_challenge_update_channel(challenge_id: str) -> str:
+def get_challenge_update_channel() -> str:
     """Get the Redis channel name for challenge updates"""
-    return f"challenge_updates:{challenge_id}"
-
-def get_challenge_connection_channel(challenge_id: str) -> str:
-    """Get the Redis channel name for challenge connection events"""
-    return f"challenge_connections:{challenge_id}"
+    return f"challenge_updates"
 
 class RedisManager:
     """Handles Redis pub/sub for WebSocket communication"""

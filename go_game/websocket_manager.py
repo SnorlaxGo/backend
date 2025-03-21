@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from .game_logic import GameService
 from .config import settings
 from .logging_config import logger
-from .event_manager import get_game_update_channel, get_game_connection_channel, get_challenge_update_channel, get_challenge_connection_channel, redis_manager, RedisManager
+from .event_manager import get_game_update_channel, get_game_connection_channel, get_challenge_update_channel, redis_manager, RedisManager
 
 class ChallengeConnectionManager:
     def __init__(self, redis_manager: RedisManager = None):
@@ -20,7 +20,7 @@ class ChallengeConnectionManager:
     async def start(self):
         """Start the Redis connection and subscribe to challenge channels"""
         await self.redis.connect()
-        await self.redis.subscribe("challenge_updates", self._handle_challenge_update)
+        await self.redis.subscribe(get_challenge_update_channel(), self._handle_challenge_update)
     
     async def _handle_challenge_update(self, message):
         """Handle challenge updates from Redis"""
@@ -34,12 +34,6 @@ class ChallengeConnectionManager:
         if challenge_id not in self.active_connections:
             self.active_connections[challenge_id] = []
         self.active_connections[challenge_id].append(websocket)
-        
-        # Store connection info in Redis
-        await self.redis.publish("challenge_connections", {
-            "action": "connect",
-            "challenge_id": challenge_id
-        })
 
     def disconnect(self, websocket: WebSocket, challenge_id: str):
         if challenge_id in self.active_connections:
@@ -47,12 +41,6 @@ class ChallengeConnectionManager:
                 self.active_connections[challenge_id].remove(websocket)
             if not self.active_connections[challenge_id]:
                 del self.active_connections[challenge_id]
-                
-            # Update Redis about disconnection
-            asyncio.create_task(self.redis.publish("challenge_connections", {
-                "action": "disconnect",
-                "challenge_id": challenge_id
-            }))
 
     async def broadcast_to_challenge(self, challenge_id: str, message: dict):
         if challenge_id in self.active_connections:

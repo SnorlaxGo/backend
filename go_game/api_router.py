@@ -8,7 +8,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 import go_game.models as models
 from .game_logic import GameService, InvalidMoveError, KoViolationError, SuicideMoveError, MoveResultType, MoveResult
 from .models import StoneColor, GameStatus, TimeControl
-from .websocket_manager import redis_manager, get_game_update_channel
+from .event_manager import redis_manager, get_game_update_channel, get_challenge_update_channel
 
 from .schemas import (
     GameStateResponse,
@@ -27,7 +27,10 @@ from .schemas import (
     DrawOfferRequest,
     DrawOfferResponse,
     DrawAcceptResponse,
-    UserInfoResponse
+    UserInfoResponse,
+    TimeoutData,
+    TimeoutMessage,
+    RedisGameUpdate
 )
 from .auth import get_current_user, Token, authenticate_user, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, create_refresh_token, validate_token
 from .utils.board_visualizer import visualize_game
@@ -169,10 +172,12 @@ async def create_open_challenge(challenge: OpenChallenge,
             game_id=new_game.id,
             color=StoneColor.WHITE if white_player_id == current_user.id else StoneColor.BLACK
         )
-        await redis_manager.publish("challenge_updates", {
-            "challenge_id": matching_challenge.id,
-            "data": response.dict()
-        })
+        redis_message = RedisGameUpdate(
+            game_id=new_game.id,
+            message=response.dict(),
+            source_id=None
+        )
+        await redis_manager.publish(get_challenge_update_channel(), redis_message.dict())
         
         return response
     
@@ -192,10 +197,12 @@ async def create_open_challenge(challenge: OpenChallenge,
     )
     
     # Notify via Redis about the new challenge
-    await redis_manager.publish("challenge_updates", {
-        "challenge_id": new_challenge.id,
-        "data": response.dict()
-    })
+    redis_message = RedisGameUpdate(
+        game_id=new_challenge.id,
+        message=response.dict(),
+        source_id=None
+    )
+    await redis_manager.publish(get_challenge_update_channel(), redis_message.dict())
     
     return response
 
@@ -340,32 +347,37 @@ async def make_game_move(
                        game_id, result.player_color)
             
             # Broadcast the timeout via Redis
-            await redis_manager.publish(get_game_update_channel(game_id), {
-                "game_id": game_id,
-                "message": WebSocketMessage(
-                    type=WebSocketMessageType.GAME_TIMEOUT,
-                    data={
-                        "game_id": game_id,
-                        "player_color": result.player_color,
-                        "game_state": result.game
-                    }
-                ).dict()
-            })
-            
+            timeout_message = TimeoutMessage(data=TimeoutData(
+                timeout_player=result.player_color,
+                status=result.game.status,
+                game_id=game_id
+            ))
+
+            redis_message = RedisGameUpdate(
+                game_id=game_id,
+                message=timeout_message.dict(),
+                source_id=None
+            )
+
+            await redis_manager.publish(get_game_update_channel(game_id), redis_message.dict())
+
             return {"status": "timeout", "message": result.message}
             
         elif result.type == MoveResultType.GAME_OVER:
             logger.info("Game over detected in game %d", game_id)
             
             # Broadcast the game over state via Redis
-            await redis_manager.publish(get_game_update_channel(game_id), {
-                "game_id": game_id,
-                "message": WebSocketMessage(
-                    type=WebSocketMessageType.GAME_OVER,
-                    data=result.game
-                ).dict()
-            })
-            
+            game_over_message = WebSocketMessage(
+                type=WebSocketMessageType.GAME_OVER,
+                data=result.game
+            )
+            redis_message = RedisGameUpdate(
+                game_id=game_id,
+                message=game_over_message.dict(),
+                source_id=None
+            )
+            await redis_manager.publish(get_game_update_channel(game_id), redis_message.dict())
+
             return {"status": "game_over", "message": result.message}
             
         else:  # SUCCESS case
