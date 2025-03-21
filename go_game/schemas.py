@@ -11,6 +11,10 @@ class UserInfoResponse(BaseModel):
     is_anonymous: bool = False
 
 class WebSocketMessageType(str, Enum):
+    """
+    Represents the types of messages that can be sent over WebSockets.
+    This is used for client-server communication protocol.
+    """
     GAME_ABANDONED = "game_abandoned"
     GAME_STATE = "game_state"
     MOVE = "move"
@@ -175,3 +179,14 @@ class RedisGameUpdate(BaseModel):
     game_id: int
     message: Dict
     source_id: Optional[int] = None
+
+class TimeoutData(BaseModel):
+    """Data for a timeout event"""
+    timeout_player: StoneColor  # The player who timed out
+    status: GameStatus     # The resulting game status
+    game_id: int                # The game ID
+
+class TimeoutMessage(WebSocketMessage):
+    """Message sent when a player times out"""
+    type: WebSocketMessageType = WebSocketMessageType.TIMEOUT
+    data: TimeoutData

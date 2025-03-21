@@ -7,7 +7,8 @@ import os
 # Import your routers
 from .api_router import router as api_router
 from .websocket_router import router as ws_router
-from .websocket_manager import redis_manager
+from .event_manager import redis_manager
+from .timer_service import timer_service
 
 app = FastAPI(title="Go Game Server")
 
@@ -29,6 +30,7 @@ app.include_router(ws_router)
 async def startup_event():
     # Initialize Redis
     await redis_manager.connect()
+    await timer_service.start()
 
 @app.on_event("shutdown")
 async def shutdown_event():

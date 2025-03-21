@@ -33,6 +33,10 @@ class BoardSize(IntEnum):
     STANDARD = 19   # 19x19 traditional board size
 
 class GameStatus(IntEnum):
+    """
+    Represents the persistent status of a game in the database.
+    This enum is used for database storage and querying.
+    """
     ACTIVE = 1
     BLACK_WON = 2
     WHITE_WON = 3
@@ -149,12 +153,11 @@ class Game(Base):
         if not current_time:
             current_time = datetime.utcnow()
             
-        if self.move_count <= 1:  # First move doesn't count against time
-            if self.black_last_move_at is None:
-                self.black_last_move_at = current_time
-            if self.white_last_move_at is None:
-                self.white_last_move_at = current_time
-            return
+        #if self.move_count <= 1:  # First move doesn't count against time
+        if self.black_last_move_at is None:
+            self.black_last_move_at = current_time
+        if self.white_last_move_at is None:
+            self.white_last_move_at = current_time
 
         is_black_turn = self.is_black_turn
         

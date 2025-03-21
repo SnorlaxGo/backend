@@ -10,86 +10,7 @@ from sqlalchemy.orm import Session
 from .game_logic import GameService
 from .config import settings
 from .logging_config import logger
-
-def get_game_update_channel(game_id: int) -> str:
-    """Get the Redis channel name for game updates"""
-    return f"game_updates:{game_id}"
-
-def get_game_connection_channel(game_id: int) -> str:
-    """Get the Redis channel name for game connection events"""
-    return f"game_connections:{game_id}"
-
-def get_challenge_update_channel(challenge_id: str) -> str:
-    """Get the Redis channel name for challenge updates"""
-    return f"challenge_updates:{challenge_id}"
-
-def get_challenge_connection_channel(challenge_id: str) -> str:
-    """Get the Redis channel name for challenge connection events"""
-    return f"challenge_connections:{challenge_id}"
-
-class RedisManager:
-    """Handles Redis pub/sub for WebSocket communication"""
-    
-    def __init__(self, redis_url: str = settings.REDIS_URL):
-        self.redis_url = redis_url
-        self.redis_conn: Optional[redis.Redis] = None
-        self.pubsub: Optional[redis.client.PubSub] = None
-        self.listener_task: Optional[Task] = None
-    
-    async def connect(self):
-        """Connect to Redis"""
-        logger.info("Connecting to Redis at %s", self.redis_url)
-        try:
-            self.redis_conn = await redis.from_url(self.redis_url)
-            self.pubsub = self.redis_conn.pubsub()
-            self.listener_task = asyncio.create_task(self.pubsub.run())
-            logger.info("Successfully connected to Redis")
-        except Exception as e:
-            logger.error("Failed to connect to Redis: %s", str(e), exc_info=True)
-            raise
-    
-    async def disconnect(self):
-        """Disconnect from Redis"""
-        logger.info("Disconnecting from Redis")
-        try:
-            if self.listener_task:
-                self.listener_task.cancel()
-            
-            if self.pubsub:
-                await self.pubsub.unsubscribe()
-                await self.pubsub.close()
-            
-            if self.redis_conn:
-                await self.redis_conn.close()
-            logger.info("Successfully disconnected from Redis")
-        except Exception as e:
-            logger.error("Error disconnecting from Redis: %s", str(e), exc_info=True)
-    
-    async def publish(self, channel: str, message: Any):
-        """Publish a message to a Redis channel"""
-        if not self.redis_conn:
-            logger.debug("Redis connection not established, connecting now")
-            await self.connect()
-        
-        try:
-            await self.redis_conn.publish(channel, json.dumps(message))
-            logger.debug("Published message to channel %s", channel)
-        except Exception as e:
-            logger.error("Failed to publish to Redis channel %s: %s", channel, str(e), exc_info=True)
-            raise
-    
-    async def subscribe(self, channel: str, callback):
-        """Subscribe to a Redis channel"""
-        if not self.redis_conn:
-            logger.debug("Redis connection not established, connecting now")
-            await self.connect()
-        
-        try:
-            logger.info("Subscribing to Redis channel: %s", channel)
-            await self.pubsub.subscribe(**{channel: callback})
-        except Exception as e:
-            logger.error("Failed to subscribe to Redis channel %s: %s", channel, str(e), exc_info=True)
-            raise
+from .event_manager import get_game_update_channel, get_game_connection_channel, get_challenge_update_channel, get_challenge_connection_channel, redis_manager, RedisManager
 
 class ChallengeConnectionManager:
     def __init__(self, redis_manager: RedisManager = None):
@@ -361,6 +282,5 @@ class ConnectionManager:
             asyncio.create_task(self.redis.publish(f"game_connections:{game_id}", redis_message.dict()))
 
 # Create instances
-redis_manager = RedisManager()
 manager = ConnectionManager(redis_manager)
 challenge_manager = ChallengeConnectionManager(redis_manager)

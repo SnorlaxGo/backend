@@ -6,7 +6,7 @@ import json
 from .database import engine, get_db
 from fastapi.security import OAuth2PasswordRequestForm
 import go_game.models as models
-from .game_logic import GameService, InvalidMoveError, KoViolationError, SuicideMoveError
+from .game_logic import GameService, InvalidMoveError, KoViolationError, SuicideMoveError, MoveResultType, MoveResult
 from .models import StoneColor, GameStatus, TimeControl
 from .websocket_manager import redis_manager, get_game_update_channel
 
@@ -334,18 +334,53 @@ async def make_game_move(
         service = GameService(db)
         result = service.make_move(game_id, move.x, move.y, current_user.id)
         
-        # Broadcast the move via Redis
-        logger.debug("Broadcasting move for game %d via Redis", game_id)
-        await redis_manager.publish(get_game_update_channel(game_id), {
-            "game_id": game_id,
-            "message": WebSocketMessage(
-                type=WebSocketMessageType.GAME_STATE,
-                data=result
-            ).dict()
-        })
-        
-        logger.info("Move successful for game %d by user %s", game_id, current_user.username)
-        return {"status": "success"}
+        # Handle different result types
+        if result.type == MoveResultType.TIMEOUT:
+            logger.info("Timeout detected in game %d for %s player", 
+                       game_id, result.player_color)
+            
+            # Broadcast the timeout via Redis
+            await redis_manager.publish(get_game_update_channel(game_id), {
+                "game_id": game_id,
+                "message": WebSocketMessage(
+                    type=WebSocketMessageType.GAME_TIMEOUT,
+                    data={
+                        "game_id": game_id,
+                        "player_color": result.player_color,
+                        "game_state": result.game
+                    }
+                ).dict()
+            })
+            
+            return {"status": "timeout", "message": result.message}
+            
+        elif result.type == MoveResultType.GAME_OVER:
+            logger.info("Game over detected in game %d", game_id)
+            
+            # Broadcast the game over state via Redis
+            await redis_manager.publish(get_game_update_channel(game_id), {
+                "game_id": game_id,
+                "message": WebSocketMessage(
+                    type=WebSocketMessageType.GAME_OVER,
+                    data=result.game
+                ).dict()
+            })
+            
+            return {"status": "game_over", "message": result.message}
+            
+        else:  # SUCCESS case
+            # Broadcast the move via Redis
+            logger.debug("Broadcasting move for game %d via Redis", game_id)
+            await redis_manager.publish(get_game_update_channel(game_id), {
+                "game_id": game_id,
+                "message": WebSocketMessage(
+                    type=WebSocketMessageType.GAME_STATE,
+                    data=result.game
+                ).dict()
+            })
+            
+            logger.info("Move successful for game %d by user %s", game_id, current_user.username)
+            return {"status": "success"}
         
     except InvalidMoveError as e:
         logger.warning("Invalid move in game %d by user %s: %s", 
