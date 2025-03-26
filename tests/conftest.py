@@ -6,78 +6,94 @@ from sqlalchemy.orm import sessionmaker, Session
 from fastapi.testclient import TestClient
 import uuid
 
-# Import your app and models
+# Use environment variables or default to a test database with Docker settings
+DB_NAME = "go_game"
+POSTGRES_URL = os.environ.get(
+    "DATABASE_URL", 
+    f"postgresql://postgres:postgres@localhost:5432/{DB_NAME}"
+)
+
+# Create the database if it doesn't exist
+def setup_database():
+    from sqlalchemy_utils import database_exists, create_database
+    
+    # Connect to the default postgres database
+    default_engine = create_engine(
+        "postgresql://postgres:postgres@localhost:5432/postgres"
+    )
+    
+    # Create database if it doesn't exist
+    if not database_exists(POSTGRES_URL):
+        with default_engine.connect() as conn:
+            conn.execute("COMMIT")  # Close any open transaction
+            conn.execute(f"CREATE DATABASE {DB_NAME}")
+    
+    # Return the engine connected to the database
+    return create_engine(POSTGRES_URL)
+
+# Create the database before importing the app
+setup_database()
+
+# Now import your app and models
 from go_game.server import app
 from go_game.database import Base, get_db
 from go_game.models import User, Game, Challenge
 
-# Create a PostgreSQL test database
-# Use environment variables or default to a test database
-TEST_DB_NAME = f"go_game_test_{uuid.uuid4().hex[:8]}"  # Generate unique test DB name
-TEST_POSTGRES_URL = os.environ.get(
-    "TEST_DATABASE_URL", 
-    f"postgresql://postgres:postgres@localhost/{TEST_DB_NAME}"
-)
-
-# Create a new database for testing
-def create_test_database():
-    from sqlalchemy_utils import database_exists, create_database, drop_database
-    
-    # Connect to the default postgres database to create/drop test database
-    default_engine = create_engine(os.environ.get(
-        "DATABASE_URL", 
-        "postgresql://postgres:postgres@localhost/postgres"
-    ))
-    
-    # Create test database if it doesn't exist
-    if not database_exists(TEST_POSTGRES_URL):
-        create_database(TEST_POSTGRES_URL)
-    
-    # Return the engine connected to the test database
-    return create_engine(TEST_POSTGRES_URL)
-
 @pytest.fixture(scope="session")
-def test_engine():
-    # Create the test database and get engine
-    engine = create_test_database()
-    
-    # Create all tables
+def db_engine():
+    engine = create_engine(POSTGRES_URL)
     Base.metadata.create_all(bind=engine)
-    
     yield engine
-    
-    # Drop the test database after all tests
-    from sqlalchemy_utils import drop_database
-    drop_database(TEST_POSTGRES_URL)
+    Base.metadata.drop_all(bind=engine)
 
-@pytest.fixture(scope="function")
-def db(test_engine):
-    # Create a new session for each test
-    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
-    db = TestingSessionLocal()
+@pytest.fixture
+def db_session(db_engine):
+    Session = sessionmaker(autocommit=False, autoflush=False, bind=db_engine)
+    session = Session()
     
     # Start with a clean slate for each test
     for table in reversed(Base.metadata.sorted_tables):
-        db.execute(table.delete())
-    db.commit()
+        session.execute(table.delete())
+    session.commit()
     
     # Override the get_db dependency
     def override_get_db():
         try:
+            yield session
+        finally:
+            pass
+    
+    app.dependency_overrides[get_db] = override_get_db
+    
+    try:
+        yield session
+    finally:
+        session.close()
+
+@pytest.fixture
+def db(db_session):
+    yield db_session
+
+@pytest.fixture
+async def test_client():
+    """Create a test client for the FastAPI app."""
+    # Override the get_db dependency to use the test database
+    def override_get_db():
+        try:
+            db = next(get_db())
             yield db
         finally:
             pass
     
     app.dependency_overrides[get_db] = override_get_db
     
-    yield db
+    # Use TestClient for WebSocket tests
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+    yield client
     
-    # Clean up after the test
-    db.close()
-
-@pytest.fixture
-def test_client():
-    return TestClient(app)
+    # Clean up
+    app.dependency_overrides.clear()
 
 @pytest.fixture
 def test_user(db):
@@ -117,6 +133,7 @@ async def reset_manager():
     manager.player_game_connections = {}
     
     # Cancel any pending disconnect tasks
+    print("cancelling disconnect tasks", flush=True)
     for task_key, task in list(manager.disconnect_tasks.items()):
         if not task.done():
             task.cancel()
@@ -126,7 +143,30 @@ async def reset_manager():
     
     # Reset Redis if connected
     if hasattr(redis_manager, 'redis_conn') and redis_manager.redis_conn:
+        print("disconnecting redis", flush=True)
         await redis_manager.disconnect()
     redis_manager.redis_conn = None
     redis_manager.pubsub = None
     redis_manager.listener_task = None
+
+@pytest.fixture(autouse=True)
+async def cleanup_websocket_manager():
+    """Clean up the WebSocket manager state after each test."""
+    yield
+    
+    # Import here to avoid circular imports
+    from go_game.websocket_manager import manager
+    
+    # Cancel any pending tasks
+    for task_key, task in list(manager.disconnect_tasks.items()):
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+    
+    # Clear the manager state
+    manager.active_connections = {}
+    manager.player_game_connections = {}
+    manager.disconnect_tasks = {}

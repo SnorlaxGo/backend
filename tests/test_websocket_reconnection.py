@@ -1,12 +1,8 @@
 import pytest
 import asyncio
-from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session
-import websockets
+from time import sleep
 import json
-import time
-from unittest.mock import patch, MagicMock
-
+from unittest.mock import patch, MagicMock, AsyncMock
 from go_game.server import app
 from go_game.models import User, Game, GameStatus, StoneColor
 from go_game.websocket_manager import manager
@@ -36,32 +32,43 @@ def mock_redis():
     with patch('go_game.websocket_manager.redis.from_url') as mock:
         # Create a mock Redis client
         mock_redis_client = MagicMock()
-        mock_redis_client.publish = MagicMock(return_value=asyncio.Future())
-        mock_redis_client.pubsub.return_value.subscribe = MagicMock(return_value=asyncio.Future())
-        mock_redis_client.pubsub.return_value.run = MagicMock(return_value=asyncio.Future())
-        mock.return_value = asyncio.Future()
-        mock.return_value.set_result(mock_redis_client)
+        mock_redis_client.publish = AsyncMock()
+        mock_redis_client.pubsub.return_value.subscribe = AsyncMock()
+        mock_redis_client.pubsub.return_value.run = AsyncMock()
+        
+        # Make from_url return the mock client as a coroutine
+        async def mock_from_url(*args, **kwargs):
+            return mock_redis_client
+        
+        mock.side_effect = mock_from_url
         yield mock
 
+original_sleep = asyncio.sleep
 # Patch the sleep function to speed up tests
 @pytest.fixture(autouse=True)
 def mock_sleep():
+    print("mock_sleep", flush=True)
     with patch('go_game.websocket_manager.sleep') as mock_sleep:
         # Make sleep return immediately
         async def fast_sleep(seconds):
-            if seconds == 10:  # Only speed up the disconnect timeout
-                await asyncio.sleep(0.01)
-            else:
-                await asyncio.sleep(seconds)
-        
+            await original_sleep(2)
         mock_sleep.side_effect = fast_sleep
         yield mock_sleep
 
 @pytest.mark.asyncio
-async def test_reconnect_within_timeout(db, test_client, test_game, test_user, access_token, mock_sleep):
+async def test_reconnect_within_timeout(db, test_client, test_game, test_user, access_token):
     """Test that a player can reconnect within the timeout period without the game being abandoned."""
+    print("test_reconnect_within_timeout", flush=True)
     
-    # Mock the GameService to track calls
+    # Configure the mock_sleep for this test
+    async def custom_sleep(seconds):
+        return
+    
+    #mock_sleep.side_effect = custom_sleep
+    
+    # Patch asyncio.sleep directly
+    #with patch('asyncio.sleep', side_effect=custom_sleep):
+        # Mock the GameService to track calls
     with patch('go_game.websocket_manager.GameService') as MockGameService:
         mock_service_instance = MagicMock()
         MockGameService.return_value = mock_service_instance
@@ -72,31 +79,47 @@ async def test_reconnect_within_timeout(db, test_client, test_game, test_user, a
         mock_game.status = GameStatus.ACTIVE
         mock_game.black_player_id = test_user.id
         mock_service_instance.get_game.return_value = mock_game
+        # Set up the to_response method to return a serializable dict
+        mock_service_instance.to_response.return_value = {
+            "id": test_game.id,
+            "status": "active",
+            "black_player_id": test_user.id,
+            "white_player_id": None,
+            "board_size": 19,
+            "current_turn": "black",
+            "board": []
+        }
         
         # Connect to the websocket
-        with test_client.websocket_connect(f"/api/ws/game/{test_game.id}?token={access_token}") as websocket:
+        with test_client.websocket_connect(f"/ws/game/{test_game.id}?token={access_token}") as websocket:
             # Verify connection is established
-            response = await websocket.recv()
-            data = json.loads(response)
-            assert data["type"] == "GAME_STATE"
+            print("Waiting for response", flush=True)
+            response = websocket.receive_json()
+            assert response["type"] == "game_state"
         
         # Websocket is now disconnected
+        await original_sleep(0.5)
         
         # Verify disconnect check is scheduled
-        assert f"{test_game.id}:{test_user.id}" in manager.disconnect_tasks
+        task_key = f"{test_game.id}:{test_user.id}"
+        print(f"Checking for disconnect task: {task_key}", flush=True)
+        print(f"Disconnect tasks: {manager.disconnect_tasks}", flush=True)
+        assert task_key in manager.disconnect_tasks
         
         # Wait a bit to ensure the disconnect handler runs (but doesn't complete due to our mock)
-        await asyncio.sleep(0.1)
+        await original_sleep(0.5)
         
         # Reconnect before timeout expires
-        with test_client.websocket_connect(f"/api/ws/game/{test_game.id}?token={access_token}") as websocket:
+        print("Reconnecting", flush=True)
+        with test_client.websocket_connect(f"/ws/game/{test_game.id}?token={access_token}") as websocket:
             # Verify connection is re-established
-            response = await websocket.recv()
-            data = json.loads(response)
-            assert data["type"] == "GAME_STATE"
+            print("Waiting for response after reconnect", flush=True)
+            response = websocket.receive_json()
+            print(f"Response: {response}", flush=True)
+            assert response["type"] == "game_state"
         
         # Verify game was not marked as abandoned
-        mock_game.status = GameStatus.ACTIVE
+        assert mock_game.status == GameStatus.ACTIVE
         mock_service_instance.to_response.assert_not_called()
 
 @pytest.mark.asyncio
@@ -115,12 +138,12 @@ async def test_game_abandoned_after_timeout(db, test_client, test_game, test_use
         mock_game.black_player_id = test_user.id
         mock_service_instance.get_game.return_value = mock_game
         
+        
         # Connect to the websocket
-        with test_client.websocket_connect(f"/api/ws/game/{test_game.id}?token={access_token}") as websocket:
+        with test_client.websocket_connect(f"/ws/game/{test_game.id}?token={access_token}") as websocket:
             # Verify connection is established
             response = await websocket.recv()
-            data = json.loads(response)
-            assert data["type"] == "GAME_STATE"
+            assert response["type"] == "GAME_STATE"
         
         # Websocket is now disconnected
         
@@ -153,7 +176,7 @@ async def test_opponent_receives_abandoned_notification(db, test_client, test_ga
         
         # Connect opponent first
         opponent_ws = test_client.websocket_connect(
-            f"/api/ws/game/{test_game.id}?token={opponent_token}"
+            f"/ws/game/{test_game.id}?token={opponent_token}"
         ).__enter__()
         # Verify opponent connection
         response = await opponent_ws.recv()
@@ -161,7 +184,7 @@ async def test_opponent_receives_abandoned_notification(db, test_client, test_ga
         assert data["type"] == "GAME_STATE"
         
         # Connect player
-        with test_client.websocket_connect(f"/api/ws/game/{test_game.id}?token={access_token}") as websocket:
+        with test_client.websocket_connect(f"/ws/game/{test_game.id}?token={access_token}") as websocket:
             # Verify player connection
             response = await websocket.recv()
             data = json.loads(response)
@@ -197,7 +220,7 @@ async def test_multiple_reconnects(db, test_client, test_game, test_user, access
         # Connect, disconnect, and reconnect multiple times
         for _ in range(3):
             # Connect
-            with test_client.websocket_connect(f"/api/ws/game/{test_game.id}?token={access_token}") as websocket:
+            with test_client.websocket_connect(f"/ws/game/{test_game.id}?token={access_token}") as websocket:
                 # Verify connection
                 response = await websocket.recv()
                 data = json.loads(response)
@@ -208,3 +231,15 @@ async def test_multiple_reconnects(db, test_client, test_game, test_user, access
         
         # Verify game was not abandoned
         assert mock_game.status == GameStatus.ACTIVE 
+
+if __name__ == "__main__":
+    import sys
+    
+    # Check if there are any command-line arguments
+    if len(sys.argv) > 1 and sys.argv[1] == "-k":
+        # Run only the specified test
+        test_name = sys.argv[2]
+        pytest.main([__file__, '-k', test_name, '-v'])
+    else:
+        # Run all tests in this file
+        pytest.main([__file__, '-v'])

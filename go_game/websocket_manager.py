@@ -1,10 +1,9 @@
 import json
 import asyncio
 from fastapi import WebSocket
-from typing import Dict, List, Optional, Any
+from typing import Dict, List
 from asyncio import Task, create_task, sleep
-import redis.asyncio as redis
-from .models import Game, StoneColor, GameStatus
+from .models import GameStatus
 from .schemas import WebSocketMessage, WebSocketMessageType, PlayerConnectionEvent, PlayerDisconnectedMessage, RedisConnectionEvent, PlayerReconnectedMessage
 from sqlalchemy.orm import Session
 from .game_logic import GameService

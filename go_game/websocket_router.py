@@ -86,6 +86,9 @@ async def challenge_status(websocket: WebSocket, challenge_id: int):
     start_time = datetime.now()
     CHALLENGE_TIMEOUT = 10  # seconds
     
+    # Track the last status we sent to avoid sending duplicates
+    last_sent_status = None
+    
     try:
         while True:
             # Create a new session for each check
@@ -123,8 +126,8 @@ async def challenge_status(websocket: WebSocket, challenge_id: int):
                         (models.Game.white_player_id == challenge.challenger_id)
                     ).order_by(models.Game.id.desc()).first()
                     
-                    logger.debug(f"game.black_player_id: {game.black_player_id}, name: {game.black_player.username}")
-                    logger.debug(f"game.white_player_id: {game.white_player_id}, name: {game.white_player.username}")
+                    logger.info(f"game.black_player_id: {game.black_player_id}, name: {game.black_player.username}")
+                    logger.info(f"game.white_player_id: {game.white_player_id}, name: {game.white_player.username}")
                     await websocket.send_json(
                         OpenChallengeResponse(
                             challenge_id=challenge_id,
@@ -134,13 +137,15 @@ async def challenge_status(websocket: WebSocket, challenge_id: int):
                         ).dict()
                     )
                     break
-                else:
-                    await websocket.send_json(
-                        OpenChallengeResponse(
-                            challenge_id=challenge_id,
-                            status=ChallengeStatus.WAITING
-                        ).dict()
-                    )
+                elif last_sent_status != ChallengeStatus.WAITING:
+                        logger.info(f"Sending WAITING status for challenge {challenge.id}")
+                        await websocket.send_json(
+                            OpenChallengeResponse(
+                                challenge_id=challenge_id,
+                                status=ChallengeStatus.WAITING
+                            ).dict()
+                        )
+                        last_sent_status = ChallengeStatus.WAITING
 
             finally:
                 db.close()

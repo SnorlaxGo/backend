@@ -1,7 +1,6 @@
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Query, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 import asyncio
-import json
 
 from .database import engine, get_db
 from fastapi.security import OAuth2PasswordRequestForm
@@ -30,9 +29,10 @@ from .schemas import (
     UserInfoResponse,
     TimeoutData,
     TimeoutMessage,
-    RedisGameUpdate
-)
-from .auth import get_current_user, Token, authenticate_user, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, create_refresh_token, validate_token
+    RedisGameUpdate,
+    UserCreate
+    )
+from .auth import get_current_user, Token, authenticate_user, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, create_refresh_token, validate_token, get_password_hash
 from .utils.board_visualizer import visualize_game
 from datetime import timedelta, datetime
 from .background_tasks import cleanup_stale_challenges, cleanup_stale_games
@@ -93,6 +93,53 @@ async def login(
     refresh_token = create_refresh_token(data={"sub": user.username})
     logger.info("Successful login for user: %s", user.username)
     return Token(access_token=access_token, refresh_token=refresh_token, token_type="bearer")
+
+@router.post("/register", response_model=Token)
+async def register(
+    user_data: UserCreate,
+    db: Session = Depends(get_db)
+) -> Token:
+    """Register a new user"""
+    logger.info("Registration attempt for user: %s", user_data.username)
+    
+    # Check if username already exists
+    if db.query(models.User).filter(models.User.username == user_data.username).first():
+        logger.warning("Registration failed - username already exists: %s", user_data.username)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username already registered"
+        )
+        
+    # Check if email already exists
+    if db.query(models.User).filter(models.User.email == user_data.email).first():
+        logger.warning("Registration failed - email already exists: %s", user_data.email)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
+
+    # Create new user
+    hashed_password = get_password_hash(user_data.password)
+    db_user = models.User(
+        username=user_data.username,
+        email=user_data.email,
+        hashed_password=hashed_password
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+
+    # Generate tokens
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": db_user.username}, 
+        expires_delta=access_token_expires
+    )
+    refresh_token = create_refresh_token(data={"sub": db_user.username})
+
+    logger.info("Successfully registered user: %s", user_data.username)
+    return Token(access_token=access_token, refresh_token=refresh_token, token_type="bearer")
+
 
 @router.get("/me", response_model=UserInfoResponse)
 async def get_current_user_info(

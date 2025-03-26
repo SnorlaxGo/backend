@@ -1,8 +1,9 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr, validator
 from typing import List, Optional, Literal, List, Tuple, Dict, Any, Union
 from datetime import datetime
 from enum import Enum
 from .models import StoneColor, ChallengeStatus, GameStatus
+import re
 
 class UserInfoResponse(BaseModel):
     id: int
@@ -190,3 +191,24 @@ class TimeoutMessage(WebSocketMessage):
     """Message sent when a player times out"""
     type: WebSocketMessageType = WebSocketMessageType.TIMEOUT
     data: TimeoutData
+
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    email: EmailStr  # This validates email format
+    
+    @validator('username')
+    def username_must_be_valid(cls, v):
+        if not re.match(r'^[a-zA-Z0-9_-]{3,20}$', v):
+            raise ValueError('Username must be 3-20 characters and contain only letters, numbers, underscores, and hyphens')
+        return v
+    
+    @validator('password')
+    def password_must_be_strong(cls, v):
+        if len(v) < 8:
+            raise ValueError('Password must be at least 8 characters')
+        # Add more password strength checks as needed
+        return v
+    
+    class Config:
+        orm_mode = True

@@ -63,6 +63,7 @@ class RedisManager:
             await self.connect()
         
         try:
+            logger.info(f"Publishing message to channel {channel}: {message}")
             await self.redis_conn.publish(channel, json.dumps(message))
             logger.debug("Published message to channel %s", channel)
         except Exception as e:

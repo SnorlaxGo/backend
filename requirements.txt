@@ -13,3 +13,4 @@ python-dotenv==1.0.0
 websockets==10.0
 python-multipart==0.0.6
 redis==4.6.0
+pydantic[email]==1.9.0
