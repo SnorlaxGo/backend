@@ -606,7 +606,7 @@ async def offer_draw(
         data=gs.to_response(game)
     )
     
-    await redis_manager.publish("game_updates", {
+    await redis_manager.publish(get_game_update_channel(game_id), {
         "game_id": game_id,
         "message": message.dict()
     })
@@ -644,7 +644,7 @@ async def accept_draw(
         data=gs.to_response(game)
     )
     
-    await redis_manager.publish("game_updates", {
+    await redis_manager.publish(get_game_update_channel(game_id), {
         "game_id": game_id,
         "message": message.dict()
     })
