@@ -18,9 +18,8 @@ from .schemas import (
     DirectChallenge,
     OpenChallenge,
     AnonymousChallenge,
-    ChallengeStatus,
-    ActiveGameInfo,
-    ActiveGamesResponse,
+    GameHistoryResponse,
+    GameSummary,
     WebSocketMessageType,
     WebSocketMessage,
     DrawOfferRequest,
@@ -30,7 +29,9 @@ from .schemas import (
     TimeoutData,
     TimeoutMessage,
     RedisGameUpdate,
-    UserCreate
+    UserCreate,
+    MoveResponse,
+    GameHistory
     )
 from .auth import get_current_user, Token, authenticate_user, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, create_refresh_token, validate_token, get_password_hash
 from .utils.board_visualizer import visualize_game
@@ -458,6 +459,22 @@ async def make_game_move(
                     game_id, current_user.username, str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get('/game/{game_id}/history', response_model=GameHistory)
+def get_game_history(game_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    # Check if the user is a player in this game
+    print(current_user.id)
+    game = db.query(models.Game).filter(models.Game.id == game_id, (models.Game.black_player_id == current_user.id) | (models.Game.white_player_id == current_user.id)).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    
+    moves = db.query(models.Move).filter(models.Move.game_id == game_id).all()
+    move_list = []
+    for move in moves:
+        moves_response = MoveResponse(move_number=move.move_number, x=move.x, y=move.y, color=move.color)
+        move_list.append(moves_response)
+
+    return GameHistory(game_id=game.id, moves=move_list, black_player_name=game.black_player.username, white_player_name=game.white_player.username, board_size=game.board_size)
+
 @router.get("/game/{game_id}/state")
 def get_current_game_state(
     game_id: int,
@@ -521,44 +538,48 @@ async def resign_game(
     
     return message.dict()
 
-@router.get("/games/active", response_model=ActiveGamesResponse)
-def get_active_games(
+@router.get("/games", response_model=GameHistoryResponse)
+def get_games(
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    skip: int = 0,
+    limit: int = 10
 ):
-    # Find all active games where the user is a player
-    active_games = db.query(models.Game).filter(
+    # Find all games where the user is a player
+    query = db.query(models.Game).filter(
         (models.Game.black_player_id == current_user.id) | 
         (models.Game.white_player_id == current_user.id),
-        models.Game.status == GameStatus.ACTIVE
-    ).order_by(models.Game.last_move_at.desc()).all()
+        models.Game.status != GameStatus.ACTIVE
+    ).order_by(models.Game.last_move_at.desc())
     
-    game_info_list = []
-    for game in active_games:
-        is_black = game.black_player_id == current_user.id
-        opponent = game.white_player if is_black else game.black_player
+    # Get total count for pagination
+    total_count = query.count()
+    
+    # Apply pagination
+    games = query.offset(skip).limit(limit).all()
+    
+    # Convert games to response format
+    games_response = []
+    for game in games:
+        # Determine opponent (the other player)
+        opponent_id = game.white_player_id if game.black_player_id == current_user.id else game.black_player_id
+        opponent = db.query(models.User).filter(models.User.id == opponent_id).first()
         
-        # Determine if it's the user's turn
-        your_turn = game.is_black_turn == is_black
+        # Format score string
+        score = f"B+{game.black_points}" if game.black_points > game.white_points else f"W+{game.white_points}"
         
-        game_info = ActiveGameInfo(
-            game_id=game.id,
-            opponent_name=opponent.username,
-            color=StoneColor.BLACK if is_black else StoneColor.WHITE,
-            board_size=game.board_size,
-            time_control=game.time_control,
-            black_time_used=game.black_time_remaining,
-            white_time_used=game.white_time_remaining,
-            last_move_at=game.last_move_at,
-            game_type="real_time" if game.time_control != TimeControl.CORRESPONDENCE else "correspondence",
-            your_turn=your_turn
+        result = "win" if game.black_points > game.white_points else "loss" if game.black_points < game.white_points else "draw"
+
+        game_history_info = GameSummary(
+            id=game.id,
+            opponent=opponent.username,
+            date=game.created_at,
+            result=result,
+            score=score
         )
-        game_info_list.append(game_info)
-    
-    return ActiveGamesResponse(
-        games=game_info_list,
-        count=len(game_info_list)
-    )
+        games_response.append(game_history_info)
+        
+    return GameHistoryResponse(games=games_response, count=total_count)
 
 @router.post("/game/{game_id}/offer_draw")
 async def offer_draw(

@@ -128,21 +128,29 @@ class GameType(Enum):
     REAL_TIME = "real_time"
     CORRESPONDENCE = "correspondence"
 
-class ActiveGameInfo(BaseModel):
-    game_id: int
-    opponent_name: str
+class MoveResponse(BaseModel):
+    x: int
+    y: int
     color: StoneColor
-    board_size: int
-    time_control: Optional[int] = None  # None for correspondence games
-    black_time_used: Optional[int] = None
-    white_time_used: Optional[int] = None
-    last_move_at: datetime
-    game_type: GameType
-    your_turn: bool
+    move_number: int
 
-class ActiveGamesResponse(BaseModel):
-    games: List[ActiveGameInfo]
-    count: int 
+class GameHistory(BaseModel):
+    moves: List[MoveResponse]
+    black_player_name: str
+    white_player_name: str
+    board_size: int
+    game_id: int
+
+class GameSummary(BaseModel):
+    id: int
+    opponent: str
+    date: datetime
+    result: str
+    score: str
+
+class GameHistoryResponse(BaseModel):
+    games: List[GameSummary]
+    count: int
 
 class DrawOfferRequest(BaseModel):
     game_id: int
