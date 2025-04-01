@@ -11,7 +11,7 @@ class UserInfoResponse(BaseModel):
     email: str
     is_anonymous: bool = False
 
-class WebSocketMessageType(str, Enum):
+class WebSocketResponseType(str, Enum):
     """
     Represents the types of messages that can be sent over WebSockets.
     This is used for client-server communication protocol.
@@ -26,8 +26,33 @@ class WebSocketMessageType(str, Enum):
     DRAW_ACCEPTED = "draw_accepted"
     PLAYER_DISCONNECTED = "player_disconnected"
     PLAYER_RECONNECTED = "player_reconnected"
+    PONG = "pong"
 
+class WebSocketRequestType(str, Enum):
+    MOVE = "move"
+    PING = "ping"
+    RESIGN = "resign"
+    OFFER_DRAW = "offer_draw"
+    ACCEPT_DRAW = "accept_draw"
 
+class WebSocketRequest(BaseModel):
+    type: WebSocketRequestType
+    data: Optional[Dict[str, Any]] = None
+
+class PingData(BaseModel):
+    move_number: int
+
+class MoveData(BaseModel):
+    x: int
+    y: int
+    
+class WebSocketResponse(BaseModel):
+    type: WebSocketResponseType
+    data: Any
+
+class PongResponse(WebSocketResponse):
+    type: WebSocketResponseType = WebSocketResponseType.PONG
+    
 class GameStateResponse(BaseModel):
     success: bool = True
     board: List[List[int]]
@@ -38,15 +63,13 @@ class GameStateResponse(BaseModel):
     white_time_used: Optional[int]
     color: StoneColor  # current turn color
     status: GameStatus
+    move_number: int
     black_player_name: Optional[str] = None
     white_player_name: Optional[str] = None
 
     class Config:
         from_attributes = True
 
-class WebSocketMessage(BaseModel):
-    type: WebSocketMessageType
-    data: Any
 
 class PlayerBase(BaseModel):
     username: str
@@ -101,15 +124,6 @@ class GameMatchResponse(BaseModel):
     status: str
     challenge_id: int
     color: StoneColor
-
-class MoveResponse(BaseModel):
-    success: bool
-    board: list[list[int]]
-    captured: list[tuple[int, int]]
-    black_captures: int
-    white_captures: int
-    black_time_used: Optional[int] = None
-    white_time_used: Optional[int] = None
 
 class GameMoveRequest(BaseModel):
     x: int
@@ -168,12 +182,12 @@ class PlayerConnectionEvent(BaseModel):
     player_id: int
     game_id: int
 
-class PlayerDisconnectedMessage(WebSocketMessage):
-    type: WebSocketMessageType = WebSocketMessageType.PLAYER_DISCONNECTED
+class PlayerDisconnectedMessage(WebSocketResponse):
+    type: WebSocketResponseType = WebSocketResponseType.PLAYER_DISCONNECTED
     data: PlayerConnectionEvent
 
-class PlayerReconnectedMessage(WebSocketMessage):
-    type: WebSocketMessageType = WebSocketMessageType.PLAYER_RECONNECTED
+class PlayerReconnectedMessage(WebSocketResponse):
+    type: WebSocketResponseType = WebSocketResponseType.PLAYER_RECONNECTED
     data: PlayerConnectionEvent
 
 # Redis message types
@@ -195,9 +209,9 @@ class TimeoutData(BaseModel):
     status: GameStatus     # The resulting game status
     game_id: int                # The game ID
 
-class TimeoutMessage(WebSocketMessage):
+class TimeoutMessage(WebSocketResponse):
     """Message sent when a player times out"""
-    type: WebSocketMessageType = WebSocketMessageType.TIMEOUT
+    type: WebSocketResponseType = WebSocketResponseType.TIMEOUT
     data: TimeoutData
 
 class UserCreate(BaseModel):

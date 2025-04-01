@@ -8,7 +8,7 @@ from sqlalchemy import func
 from sqlalchemy.types import Integer
 from .models import Game, GameStatus, TimeControl, StoneColor
 from .websocket_manager import manager
-from .schemas import WebSocketMessage, WebSocketMessageType
+from .schemas import WebSocketResponse, WebSocketResponseType
 import traceback
 
 async def cleanup_stale_challenges():
@@ -87,8 +87,8 @@ async def cleanup_stale_games():
                         game.last_move_at = now
                         
                         try:
-                            message = WebSocketMessage(
-                                type=WebSocketMessageType.TIMEOUT,
+                            message = WebSocketResponse(
+                                type=WebSocketResponseType.TIMEOUT,
                                 data={
                                     "timeout_player": StoneColor.BLACK if is_black_turn else StoneColor.WHITE,
                                     "status": game.status

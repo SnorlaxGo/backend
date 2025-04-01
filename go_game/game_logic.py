@@ -54,7 +54,8 @@ class GameService:
             black_time_used=game.black_time_remaining,
             white_time_used=game.white_time_remaining,
             color=StoneColor.BLACK.value if game.is_black_turn else StoneColor.WHITE.value,
-            status=game.status
+            status=game.status,
+            move_number=game.move_count
         )
     def get_game_state(self, game: Game) -> dict:
         """Pure function to compute game state from a game object"""

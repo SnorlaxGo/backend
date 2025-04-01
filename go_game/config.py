@@ -16,6 +16,6 @@ class Settings:
     
     # Game settings
     CHALLENGE_TIMEOUT: int = 10  # seconds
-    DISCONNECT_TIMEOUT: int = 10  # seconds
+    DISCONNECT_TIMEOUT: int = 20  # seconds
 
 settings = Settings() 

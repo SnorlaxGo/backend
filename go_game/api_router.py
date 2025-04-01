@@ -20,14 +20,12 @@ from .schemas import (
     AnonymousChallenge,
     GameHistoryResponse,
     GameSummary,
-    WebSocketMessageType,
-    WebSocketMessage,
+    WebSocketResponseType,
+    WebSocketResponse,
     DrawOfferRequest,
     DrawOfferResponse,
     DrawAcceptResponse,
     UserInfoResponse,
-    TimeoutData,
-    TimeoutMessage,
     RedisGameUpdate,
     UserCreate,
     MoveResponse,
@@ -43,6 +41,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from jwt import PyJWTError
 from .loggers import api_logger as logger  # Import the logger
+from .game_handlers import process_game_move
 
 # Create router instead of app
 router = APIRouter()
@@ -385,79 +384,20 @@ async def make_game_move(
 ) -> GameMoveSuccessResponse:
     logger.info("Move request for game %d by user %s: (%d, %d)", 
                game_id, current_user.username, move.x, move.y)
-    try:
-        service = GameService(db)
-        result = service.make_move(game_id, move.x, move.y, current_user.id)
-        
-        # Handle different result types
-        if result.type == MoveResultType.TIMEOUT:
-            logger.info("Timeout detected in game %d for %s player", 
-                       game_id, result.player_color)
-            
-            # Broadcast the timeout via Redis
-            timeout_message = TimeoutMessage(data=TimeoutData(
-                timeout_player=result.player_color,
-                status=result.game.status,
-                game_id=game_id
-            ))
-
-            redis_message = RedisGameUpdate(
-                game_id=game_id,
-                message=timeout_message.dict(),
-                source_id=None
-            )
-
-            await redis_manager.publish(get_game_update_channel(game_id), redis_message.dict())
-
-            return {"status": "timeout", "message": result.message}
-            
-        elif result.type == MoveResultType.GAME_OVER:
-            logger.info("Game over detected in game %d", game_id)
-            
-            # Broadcast the game over state via Redis
-            game_over_message = WebSocketMessage(
-                type=WebSocketMessageType.GAME_OVER,
-                data=result.game
-            )
-            redis_message = RedisGameUpdate(
-                game_id=game_id,
-                message=game_over_message.dict(),
-                source_id=None
-            )
-            await redis_manager.publish(get_game_update_channel(game_id), redis_message.dict())
-
-            return {"status": "game_over", "message": result.message}
-            
-        else:  # SUCCESS case
-            # Broadcast the move via Redis
-            logger.debug("Broadcasting move for game %d via Redis", game_id)
-            await redis_manager.publish(get_game_update_channel(game_id), {
-                "game_id": game_id,
-                "message": WebSocketMessage(
-                    type=WebSocketMessageType.GAME_STATE,
-                    data=result.game
-                ).dict()
-            })
-            
-            logger.info("Move successful for game %d by user %s", game_id, current_user.username)
-            return {"status": "success"}
-        
-    except InvalidMoveError as e:
-        logger.warning("Invalid move in game %d by user %s: %s", 
-                      game_id, current_user.username, str(e))
-        raise HTTPException(status_code=400, detail=str(e))
-    except KoViolationError as e:
-        logger.warning("Ko violation in game %d by user %s: %s", 
-                      game_id, current_user.username, str(e))
-        raise HTTPException(status_code=400, detail=str(e))
-    except SuicideMoveError as e:
-        logger.warning("Suicide move in game %d by user %s: %s", 
-                      game_id, current_user.username, str(e))
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error("Error making move in game %d by user %s: %s", 
-                    game_id, current_user.username, str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    
+    status, response_data, error_message = await process_game_move(
+        game_id=game_id,
+        x=move.x,
+        y=move.y,
+        user_id=current_user.id,
+        username=current_user.username,
+        db=db
+    )
+    
+    if status == "error":
+        raise HTTPException(status_code=400, detail=error_message)
+    
+    return response_data
 
 @router.get('/game/{game_id}/history', response_model=GameHistory)
 def get_game_history(game_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
@@ -524,8 +464,8 @@ async def resign_game(
     logger.info("Game %d: %s player resigned", 
                game_id, "Black" if is_black_player else "White")
                
-    message = WebSocketMessage(
-        type=WebSocketMessageType.RESIGN,
+    message = WebSocketResponse(
+        type=WebSocketResponseType.RESIGN,
         data=gs.to_response(game)
     )
 
@@ -601,8 +541,8 @@ async def offer_draw(
     
     # Notify the other player via Redis
     gs = GameService(db)
-    message = WebSocketMessage(
-        type=WebSocketMessageType.DRAW_OFFER,
+    message = WebSocketResponse(
+        type=WebSocketResponseType.DRAW_OFFER,
         data=gs.to_response(game)
     )
     
@@ -639,8 +579,8 @@ async def accept_draw(
     
     # Notify both players via Redis
     gs = GameService(db)
-    message = WebSocketMessage(
-        type=WebSocketMessageType.DRAW_ACCEPTED,
+    message = WebSocketResponse(
+        type=WebSocketResponseType.DRAW_ACCEPTED,
         data=gs.to_response(game)
     )
     

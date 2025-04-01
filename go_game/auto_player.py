@@ -200,7 +200,7 @@ class AutoPlayer:
                                 
                                 if is_my_turn:
                                     print("It's my turn!")
-                                    await asyncio.sleep(30)  # Delay 6 seconds
+                                    await asyncio.sleep(5)  # Delay 6 seconds
                                     
                                     move = self.find_empty_space()
                                     if move:

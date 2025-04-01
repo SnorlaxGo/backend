@@ -4,7 +4,7 @@ from fastapi import WebSocket
 from typing import Dict, List
 from asyncio import Task, create_task, sleep
 from .models import GameStatus
-from .schemas import WebSocketMessage, WebSocketMessageType, PlayerConnectionEvent, PlayerDisconnectedMessage, RedisConnectionEvent, PlayerReconnectedMessage
+from .schemas import PlayerConnectionEvent, PlayerDisconnectedMessage, RedisConnectionEvent, PlayerReconnectedMessage, WebSocketResponse, WebSocketResponseType
 from sqlalchemy.orm import Session
 from .game_logic import GameService
 from .config import settings
@@ -192,7 +192,7 @@ class ConnectionManager:
     async def handle_disconnect(self, game_id: int, player_id: int, db: Session):
         try:
             logger.info(f"waiting 10 seconds for player {player_id} to reconnect")
-            await sleep(10)  # Wait 10 seconds
+            await sleep(settings.DISCONNECT_TIMEOUT)  # Wait 10 seconds
             logger.info(f"player {player_id} did not reconnect")
             # Check if player reconnected
             key = f"{game_id}:{player_id}"
@@ -210,8 +210,8 @@ class ConnectionManager:
             db.commit()
             
             # Notify remaining players
-            close_message = WebSocketMessage(
-                type=WebSocketMessageType.GAME_ABANDONED,
+            close_message = WebSocketResponse(
+                type=WebSocketResponseType.GAME_ABANDONED,
                 data=gs.to_response(game)
             )
             

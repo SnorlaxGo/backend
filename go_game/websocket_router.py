@@ -2,15 +2,14 @@ import asyncio
 import uvicorn
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
-import redis.asyncio as redis
-import json
+from .schemas import WebSocketResponse, WebSocketResponseType, WebSocketRequest, WebSocketRequestType, PongResponse, PingData, MoveData
 from datetime import datetime
-
+from .game_handlers import process_game_move
 from .database import get_db
 from .auth import get_current_user_ws
 from .websocket_manager import manager, challenge_manager, redis_manager
 from .game_logic import GameService
-from .models import GameStatus
+from .models import GameStatus, StoneColor
 from . import models
 from .loggers import api_logger as logger  # Import the logger
 
@@ -49,15 +48,25 @@ async def handle_game_socket(websocket: WebSocket,
         
         if not game or game.status != GameStatus.ACTIVE:
             logger.warning("WebSocket connection rejected: Game %d is not active", game_id)
-            raise HTTPException(status_code=400, detail="Game is not active")
+            # Close the DB session before raising the exception
+            db.close()
+            # For WebSockets, we can't use HTTPException directly
+            await websocket.accept()
+            ws_resp = WebSocketResponse(
+                type=WebSocketResponseType.GAME_STATE,
+                data=service.to_response(game)
+            )
+            await websocket.send_json(ws_resp.dict())
+            await websocket.close()
+            return
+        
             
         await manager.connect(websocket, game_id, current_user.id)
         logger.info("WebSocket connected for game %d, user %s", game_id, current_user.username)
         
         try:
-            from .schemas import WebSocketMessage, WebSocketMessageType
-            message = WebSocketMessage(
-                type=WebSocketMessageType.GAME_STATE,
+            message = WebSocketResponse(
+                type=WebSocketResponseType.GAME_STATE,
                 data=service.to_response(game)
             )
             await websocket.send_json(message.dict())
@@ -68,7 +77,51 @@ async def handle_game_socket(websocket: WebSocket,
             db.close()
 
         logger.info("Waiting for disconnect from game %d", game_id)
-        await websocket.receive_text()  # Just wait for disconnect
+        while True:
+            raw_request = await websocket.receive_json()  # Just wait for disconnect
+            request = WebSocketRequest(**raw_request)
+
+            if request.type == WebSocketRequestType.PING:
+                try:
+                    ping_data = PingData(**request.data)
+                    seq_num = ping_data.move_number #this is the move number
+                    db_session = next(get_db())
+                    service = GameService(db_session)
+                    game = service.get_game(game_id)
+                    if game.move_count > seq_num:
+                        ws_resp = WebSocketResponse(
+                            type=WebSocketResponseType.GAME_STATE,
+                            data=service.to_response(game)
+                        )
+                        await websocket.send_json(ws_resp.dict())
+
+                    else:
+                        ws_resp = PongResponse()
+                        await websocket.send_json(ws_resp.dict())
+                except Exception as e:
+                    logger.error("Error processing PING request: %s", str(e), exc_info=True)
+                finally:
+                    db_session.close()
+            elif request.type == WebSocketRequestType.MOVE:
+                try:
+                    move_data = MoveData(**request.data)
+                    db_session = next(get_db())
+                    service = GameService(db_session)
+                    status, response_data, error_message = await process_game_move(
+                        game_id=game_id,
+                        x=move_data.x,
+                        y=move_data.y,
+                        user_id=current_user.id,
+                        username=current_user.username,
+                        db=db_session
+                    )
+                    if status == "error":
+                        logger.error("Error processing MOVE request: %s", str(error_message), exc_info=True)
+                    
+                except Exception as e:
+                    logger.error("Error processing MOVE request: %s", str(e), exc_info=True)
+                finally:
+                    db_session.close()
         logger.info("Disconnected from game %d", game_id)
         
     except WebSocketDisconnect:
