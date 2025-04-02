@@ -15,6 +15,10 @@ from .schemas import (
 from .event_manager import redis_manager, get_game_update_channel
 from .loggers import api_logger as logger
 
+async def handle_pass_move(game_id: int, x: int, y: int, user_id: int, username: str, db: Session):
+    service = GameService(db)
+    
+
 async def process_game_move(
     game_id: int,
     x: int,
@@ -80,22 +84,36 @@ async def process_game_move(
             )
             redis_message = RedisGameUpdate(
                 game_id=game_id,
-                message=game_over_message.dict(),
-                source_id=None
+                message=game_over_message.dict()            
             )
             await redis_manager.publish(get_game_update_channel(game_id), redis_message.dict())
 
             return "game_over", {"status": "game_over", "message": result.message}, None
-            
+        
+        elif result.type == MoveResultType.PASS:
+            logger.info("Pass move detected in game %d", game_id)
+            pass_message = WebSocketResponse(
+                type=WebSocketResponseType.PASS,
+                data=result.game
+            )
+            redis_message = RedisGameUpdate(
+                game_id=game_id,
+                message=pass_message.dict()
+            )
+            await redis_manager.publish(get_game_update_channel(game_id), redis_message.dict())
+            return "pass", {"status": "pass", "message": result.message}, None
+        
         else:  # SUCCESS case
             logger.debug("Broadcasting move for game %d via Redis", game_id)
-            await redis_manager.publish(get_game_update_channel(game_id), {
-                "game_id": game_id,
-                "message": WebSocketResponse(
+            ws_resp = WebSocketResponse(
                     type=WebSocketResponseType.GAME_STATE,
                     data=result.game
-                ).dict()
-            })
+                )
+            redis_message = RedisGameUpdate(
+                game_id=game_id,
+                message=ws_resp.dict()
+            )
+            await redis_manager.publish(get_game_update_channel(game_id), redis_message.dict())
             
             logger.info("Move successful for game %d by user %s", game_id, username)
             return "success", {"status": "success"}, None

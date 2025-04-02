@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import asyncio
 import os
-
+from .background_tasks import cleanup_stale_games
 # Import your routers
 from .api_router import router as api_router
 from .websocket_router import router as ws_router
@@ -31,6 +31,7 @@ async def startup_event():
     # Initialize Redis
     await redis_manager.connect()
     await timer_service.start()
+    asyncio.create_task(cleanup_stale_games())
 
 @app.on_event("shutdown")
 async def shutdown_event():

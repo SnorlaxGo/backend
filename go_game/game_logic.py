@@ -2,7 +2,7 @@ from sqlalchemy.orm import Session
 from .models import Game, Move, StoneColor, GameStatus
 from .schemas import GameStateResponse
 from .database import SessionLocal
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from .loggers import game_logger as logger  # Import the logger
 from enum import Enum
@@ -21,6 +21,7 @@ class MoveResultType(Enum):
     TIMEOUT = "timeout"  # Player ran out of time
     GAME_OVER = "game_over"  # Game has already ended
     INVALID = "invalid"  # Move was invalid (could add more specific types)
+    PASS = "pass"  # Move was a pass
 
 @dataclass
 class MoveResult:
@@ -97,6 +98,29 @@ class GameService:
             "status": game.status,
             "color": color
         }
+
+    def _calculate_score(self, game) -> Tuple[float, float]:
+        """
+        Calculate the final score of the game.
+        Returns (black_score, white_score)
+        """
+        # Get the board state
+        board = self.get_game_state(game)["board"]
+        
+        # Count stones
+        black_stones = sum(row.count(1) for row in board)
+        white_stones = sum(row.count(2) for row in board)
+        
+        # Count territory (simplified - in a real implementation, you'd need a proper territory counting algorithm)
+        black_territory = 0
+        white_territory = 0
+        
+        # Add komi (compensation points for white going second)
+        komi = 7.5
+        white_score = white_stones + white_territory
+        black_score = black_stones + black_territory + komi
+        
+        return black_score, white_score
 
     def make_move(self, game_id: int, x: int, y: int, player_id: int) -> MoveResult:
         """Process a move for a given game"""
@@ -196,7 +220,8 @@ class GameService:
             y=y,
             color=player_color,
             captured_positions=result["captured"],
-            resulting_board_state=result["board"]
+            resulting_board_state=result["board"],
+            is_pass=True if x == -1 and y == -1 else False
         )
         self.db.add(new_move)
 
@@ -208,7 +233,26 @@ class GameService:
         
         logger.debug("Game %d updated: move_count=%d, black_captures=%d, white_captures=%d",
                     game.id, game.move_count, game.black_captures, game.white_captures)
-                    
+        
+        if new_move.is_pass:
+            if "last_move" in game_state and game_state["last_move"] and game_state["last_move"].is_pass:
+                bscore, wscore = self._calculate_score(game)
+                if bscore > wscore:
+                    game.status = GameStatus.BLACK_WON
+                elif wscore > bscore:
+                    game.status = GameStatus.WHITE_WON
+                else:
+                    game.status = GameStatus.DRAW
+                self.db.commit()
+                return MoveResult(
+                    type=MoveResultType.GAME_OVER,
+                    game=self.to_response(game)
+                )
+            return MoveResult(
+                type=MoveResultType.PASS,
+                game=self.to_response(game)
+            )
+        
         return MoveResult(
             type=MoveResultType.SUCCESS,
             game=self.to_response(game)
@@ -297,6 +341,15 @@ def validate_move(board: List[List[StoneColor]], x: int, y: int, color: StoneCol
 def process_move(board: List[List[StoneColor]], x: int, y: int, color: StoneColor, last_move: Move):
     """Pure game logic for processing a move, without database interactions"""
     # Create a copy of the board to avoid modifying the original
+    if x == -1 and y == -1: 
+        #for now we will treat this as a pass move
+        return {
+            "board": board,
+            "captured": [],
+            "black_captures": 0,
+            "white_captures": 0,
+            "success": True
+        }
     if board[y][x] != 0:
         logger.debug("board[y][x]: %s", board[y][x])
         raise OccupiedPointError(f"Position ({x}, {y}) is already occupied")

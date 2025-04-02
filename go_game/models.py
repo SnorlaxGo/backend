@@ -225,6 +225,7 @@ class Move(Base):
     game = relationship("Game", back_populates="moves")
     resulting_board_state = Column(JSON)  # Store the full board state after this move
     captured_positions = Column(JSON)  # Store positions of any stones captured by this move
+    is_pass = Column(Boolean, default=False)
 
 class Challenge(Base):
     __tablename__ = "challenges"

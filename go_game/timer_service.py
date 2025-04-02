@@ -72,7 +72,6 @@ class GameTimerService:
                     
                     # Set up expiration listener and check for missed timeouts
                     await self._setup_expiration_listener()
-                    #await self._check_for_missed_timeouts()
                 
                 elif not is_current_leader and self.is_leader:
                     # We lost leadership
@@ -248,52 +247,6 @@ class GameTimerService:
                 redis_message.dict()
             )
             
-        finally:
-            db.close()
-
-    async def _check_for_missed_timeouts(self):
-        """Check for any timeouts that might have been missed during leader transition"""
-        logger.info("Checking for missed timeouts after becoming leader")
-        
-        db = self.db_factory()
-        try:
-            # Find active games with time controls
-            active_games = db.query(Game).filter(
-                Game.status == GameStatus.ACTIVE,
-                Game.time_control != None,
-                Game.time_control != TimeControl.CORRESPONDENCE
-            ).all()
-            
-            current_time = datetime.utcnow()
-            for game in active_games:
-                # Calculate elapsed time since last move
-                elapsed = (current_time - game.last_move_at).total_seconds()
-                
-                # Check if player has timed out
-                if game.is_black_turn and elapsed > game.black_time_remaining:
-                    logger.info(f"Found missed timeout for game {game.id}, BLACK player")
-                    await self._process_timeout(game.id, StoneColor.BLACK)
-                    
-                elif not game.is_black_turn and elapsed > game.white_time_remaining:
-                    logger.info(f"Found missed timeout for game {game.id}, WHITE player")
-                    await self._process_timeout(game.id, StoneColor.WHITE)
-                else:
-                    # Game is still active, ensure Redis timer is set
-                    player_color = StoneColor.BLACK if game.is_black_turn else StoneColor.WHITE
-                    remaining = game.black_time_remaining - elapsed if game.is_black_turn else game.white_time_remaining - elapsed
-                    
-                    if remaining > 0:
-                        # Check if timer exists
-                        timer_key = f"timer:{game.id}:{player_color.value}"
-                        ttl = await self.redis.redis_conn.ttl(timer_key)
-                        
-                        if ttl < 0:  # Key doesn't exist or has no expiry
-                            # Set the timer
-                            await self.redis.redis_conn.set(timer_key, "1", ex=int(remaining))
-                            logger.info(f"Set missing timer for game {game.id}, player {player_color.value}: {remaining}s")
-        
-        except Exception as e:
-            logger.error(f"Error checking for missed timeouts: {str(e)}", exc_info=True)
         finally:
             db.close()
             

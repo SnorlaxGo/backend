@@ -27,6 +27,8 @@ class WebSocketResponseType(str, Enum):
     PLAYER_DISCONNECTED = "player_disconnected"
     PLAYER_RECONNECTED = "player_reconnected"
     PONG = "pong"
+    GAME_OVER = "game_over"
+    PASS = "pass"
 
 class WebSocketRequestType(str, Enum):
     MOVE = "move"
@@ -161,6 +163,7 @@ class GameSummary(BaseModel):
     date: datetime
     result: str
     score: str
+    board_size: int
 
 class GameHistoryResponse(BaseModel):
     games: List[GameSummary]
@@ -196,12 +199,11 @@ class RedisConnectionEvent(BaseModel):
     game_id: int
     player_id: int
     message: Optional[Dict] = None
-    source_id: Optional[int] = None
 
 class RedisGameUpdate(BaseModel):
     game_id: int
     message: Dict
-    source_id: Optional[int] = None
+    target_id: Optional[int] = None
 
 class TimeoutData(BaseModel):
     """Data for a timeout event"""

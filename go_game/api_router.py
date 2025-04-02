@@ -515,6 +515,7 @@ def get_games(
             opponent=opponent.username,
             date=game.created_at,
             result=result,
+            board_size=game.board_size,
             score=score
         )
         games_response.append(game_history_info)
@@ -545,11 +546,14 @@ async def offer_draw(
         type=WebSocketResponseType.DRAW_OFFER,
         data=gs.to_response(game)
     )
+
+    redis_message = RedisGameUpdate(
+        game_id=game.id,
+        message=message.dict(),
+        target_id=game.white_player_id if current_user.id == game.black_player_id else game.black_player_id
+    )
     
-    await redis_manager.publish(get_game_update_channel(game_id), {
-        "game_id": game_id,
-        "message": message.dict()
-    })
+    await redis_manager.publish(get_game_update_channel(game_id), redis_message.dict())
     
     return DrawOfferResponse(
         status="success",

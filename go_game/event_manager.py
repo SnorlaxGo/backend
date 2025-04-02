@@ -5,6 +5,7 @@ from typing import Optional, Any
 import json
 import asyncio
 from asyncio import Task
+import uuid
 
 def get_game_update_channel(game_id: int) -> str:
     """Get the Redis channel name for game updates"""
@@ -26,6 +27,7 @@ class RedisManager:
         self.redis_conn: Optional[redis.Redis] = None
         self.pubsub: Optional[redis.client.PubSub] = None
         self.listener_task: Optional[Task] = None
+        self.instance_id = str(uuid.uuid4())  # Generate a unique ID for this instance
     
     async def connect(self):
         """Connect to Redis"""
@@ -61,7 +63,9 @@ class RedisManager:
         if not self.redis_conn:
             logger.debug("Redis connection not established, connecting now")
             await self.connect()
-        
+
+        message["source_id"] = self.instance_id
+
         try:
             logger.info(f"Publishing message to channel {channel}: {message}")
             await self.redis_conn.publish(channel, json.dumps(message))

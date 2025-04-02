@@ -10,6 +10,9 @@ from .models import Game, GameStatus, TimeControl, StoneColor
 from .websocket_manager import manager
 from .schemas import WebSocketResponse, WebSocketResponseType
 import traceback
+from .event_manager import get_game_update_channel
+from .logging_config import logger
+from sqlalchemy import case
 
 async def cleanup_stale_challenges():
     while True:
@@ -62,13 +65,19 @@ async def cleanup_stale_games():
                 now = datetime.utcnow()
                 
                 # Find active games
-                
+                time_in_seconds = case(
+                    (models.Game.time_control == TimeControl.BLITZ, TimeControl.BLITZ.value),  # 5 minutes
+                    (models.Game.time_control == TimeControl.RAPID, TimeControl.RAPID.value),  # 10 minutes
+                    (models.Game.time_control == TimeControl.CLASSICAL, TimeControl.CLASSICAL.value),  # 30 minutes
+                    else_=604800  # 7 days for correspondence
+                )
                 active_games = db.query(models.Game).filter(
                     models.Game.status == GameStatus.ACTIVE,
-                    models.Game.time_control != TimeControl.CORRESPONDENCE,  # Skip correspondence games
                     # Compare created_at with now using the game's own time control value
-                    models.Game.created_at < now - func.make_interval(secs=func.cast(models.Game.time_control, Integer) * 2)
+                    models.Game.created_at < now - func.make_interval(secs=time_in_seconds * 2)
                 ).all()
+
+                logger.debug(f"Found {len(active_games)} active games")
 
                 for game in active_games:
                     # Get time elapsed since last move
@@ -95,7 +104,7 @@ async def cleanup_stale_games():
                                 }
                             )
                             print(f"Sending timeout message for game {game.id}: {message.dict()}")  # Debug print
-                            await manager.broadcast_to_game(game.id, message.dict())
+                            await manager.broadcast_to_game(get_game_update_channel(game.id), message.dict())
                             await manager.close_game_connections(game.id)
                         except Exception as e:
                             print(f"Error notifying clients for game {game.id}: {str(e)}")
@@ -106,6 +115,6 @@ async def cleanup_stale_games():
             finally:
                 db.close()
         except Exception as e:
-            print(f"Error in stale games cleanup task: {e}")
+            logger.debug(f"Error in stale games cleanup task: {e}")
 
         await asyncio.sleep(60)  # Run cleanup every minute

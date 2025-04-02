@@ -61,15 +61,23 @@ class ConnectionManager:
         await self.redis.connect()
         logger.info("ConnectionManager startup completed")
     
+    def get_target_id(self, game_id: int, target_id: int):
+        return f"{game_id}:{target_id}"
+    
     async def _handle_game_update(self, message):
         """Handle game updates from Redis"""
+        logger.debug(f"Received game update: {message}")
         data = json.loads(message["data"])
         logger.debug(f"Received game update: {data}")
         game_id = data.get("game_id")
-        source_id = data.get("source_id")
-        if source_id == id(self):
-            return
-        if game_id and game_id in self.active_connections:
+        target_id = data.get("target_id")  # New field for targeted messages
+        print(f"target_id: {target_id}")
+        
+        # Handle targeted messages
+        if target_id is not None:
+            await self.send_to_target(game_id, target_id, data["message"])
+
+        elif game_id and game_id in self.active_connections:
             await self.broadcast_to_game(game_id, data["message"])
     
     async def _handle_game_connection(self, message):
@@ -78,7 +86,7 @@ class ConnectionManager:
         action = data.get("action")
         game_id = data.get("game_id")
         source_id = data.get("source_id")
-        if source_id == id(self):
+        if source_id == self.redis.instance_id:
             logger.debug(f"Ignoring message from self: {data}")
             return
         
@@ -117,7 +125,7 @@ class ConnectionManager:
         self.active_connections[game_id].append(websocket)
         
         # Store player connection and cancel any pending disconnect check
-        key = f"{game_id}:{player_id}"
+        key = self.get_target_id(game_id, player_id)
         self.player_game_connections[key] = websocket
         await self.cancel_disconnect_check(game_id, player_id)
         logger.info(f"player_game_connections: {self.player_game_connections}")
@@ -132,7 +140,7 @@ class ConnectionManager:
                 # active for a while might be beneficial for reconnections
             
         # Remove player connection
-        key = f"{game_id}:{player_id}"
+        key = self.get_target_id(game_id, player_id)
         if key in self.player_game_connections:
             del self.player_game_connections[key]
         
@@ -152,13 +160,17 @@ class ConnectionManager:
             action="player_disconnect",
             game_id=game_id,
             player_id=player_id,
-            source_id=id(self),
             message=disconnect_message.dict()
         )
         asyncio.create_task(self.redis.publish(get_game_connection_channel(game_id), redis_message.dict()))
         
         # Schedule disconnect check
         self.schedule_disconnect_check(game_id, player_id, db)
+
+    async def send_to_target(self, game_id: int, target_id: int, message: dict):
+        key = self.get_target_id(game_id, target_id)
+        if key in self.player_game_connections:
+            await self.player_game_connections[key].send_json(message)
 
     async def broadcast_to_game(self, game_id: int, message: dict):
         logger.debug(f"Broadcasting to game {game_id}: {message}")
@@ -195,7 +207,7 @@ class ConnectionManager:
             await sleep(settings.DISCONNECT_TIMEOUT)  # Wait 10 seconds
             logger.info(f"player {player_id} did not reconnect")
             # Check if player reconnected
-            key = f"{game_id}:{player_id}"
+            key = self.get_target_id(game_id, player_id)
             if key in self.player_game_connections:
                 return  # Player reconnected, no need to abandon game
             
@@ -222,7 +234,6 @@ class ConnectionManager:
             await self.redis.publish(get_game_connection_channel(game_id), {
                 "action": "game_abandoned",
                 "game_id": game_id,
-                "source_id": id(self),
                 "message": close_message.dict()
             })
 
@@ -232,18 +243,18 @@ class ConnectionManager:
             logger.error(f"Error disconnecting from game {game_id} for player {player_id}: {e}")
         finally:
             logger.info(f"disconnecting from game {game_id} for player {player_id}")
-            key = f"{game_id}:{player_id}"
+            key = self.get_target_id(game_id, player_id)
             if key in self.disconnect_tasks:
                 del self.disconnect_tasks[key]
 
     def schedule_disconnect_check(self, game_id: int, player_id: int, db: Session):
-        key = f"{game_id}:{player_id}"
+        key = self.get_target_id(game_id, player_id)
         if key in self.disconnect_tasks:
             self.disconnect_tasks[key].cancel()
         self.disconnect_tasks[key] = create_task(self.handle_disconnect(game_id, player_id, db))
 
     async def cancel_disconnect_check(self, game_id: int, player_id: int):
-        key = f"{game_id}:{player_id}"
+        key = self.get_target_id(game_id, player_id)
         if key in self.disconnect_tasks:
             self.disconnect_tasks[key].cancel()
             del self.disconnect_tasks[key]
