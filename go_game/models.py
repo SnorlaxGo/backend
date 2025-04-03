@@ -201,6 +201,8 @@ class User(Base):
     hashed_password = Column(String)
     role = Column(String, default=UserRole.USER)
     is_anonymous = Column(Boolean, default=False)
+    reset_token = Column(String, unique=True, nullable=True, index=True)
+    reset_token_expires = Column(DateTime, nullable=True)
     # Replace single elo_rating with relationship to multiple ratings
     #ratings = relationship("PlayerRating", back_populates="user")
     

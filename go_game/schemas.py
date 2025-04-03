@@ -236,3 +236,17 @@ class UserCreate(BaseModel):
     
     class Config:
         orm_mode = True
+
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+
+class PasswordResetWithCode(BaseModel):
+    email: EmailStr
+    reset_code: str
+    new_password: str
+
+    @validator('new_password')
+    def password_must_be_strong(cls, v):
+        if len(v) < 8:
+            raise ValueError('Password must be at least 8 characters')
+        return v

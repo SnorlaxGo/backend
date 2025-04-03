@@ -29,7 +29,9 @@ from .schemas import (
     RedisGameUpdate,
     UserCreate,
     MoveResponse,
-    GameHistory
+    GameHistory,
+    PasswordResetRequest,
+    PasswordResetWithCode
     )
 from .auth import get_current_user, Token, authenticate_user, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, create_refresh_token, validate_token, get_password_hash
 from .utils.board_visualizer import visualize_game
@@ -42,6 +44,8 @@ from pydantic import BaseModel
 from jwt import PyJWTError
 from .loggers import api_logger as logger  # Import the logger
 from .game_handlers import process_game_move
+from .email_service import send_password_reset_code_email
+import string
 
 # Create router instead of app
 router = APIRouter()
@@ -649,3 +653,67 @@ async def refresh_token(
             detail="Invalid refresh token",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+import random
+import string
+
+@router.post("/forgot-password/request")
+async def request_password_reset(
+    request: PasswordResetRequest,
+    db: Session = Depends(get_db)
+):
+    """Request a password reset code"""
+    # Find the user by email
+    user = db.query(models.User).filter(models.User.email == request.email).first()
+    
+    # Always return success even if email not found (security best practice)
+    if not user:
+        logger.info(f"Password reset requested for non-existent email: {request.email}")
+        return {"status": "success", "message": "If your email is registered, you will receive a password reset code"}
+    
+    # Generate a more secure 8-character alphanumeric code
+    reset_code = ''.join(random.choices(string.digits + string.ascii_uppercase, k=8))
+    token_expiry = datetime.utcnow() + timedelta(hours=1)  # Shorter expiry for codes
+    
+    # Store the code in the database
+    user.reset_token = reset_code
+    user.reset_token_expires = token_expiry
+    db.commit()
+    
+    # Send the email with the code
+    await send_password_reset_code_email(user.email, reset_code)
+    
+    logger.info(f"Password reset code sent to: {user.email}")
+    return {"status": "success", "message": "If your email is registered, you will receive a password reset code"}
+
+@router.post("/forgot-password/reset")
+async def verify_reset_code(
+    request: PasswordResetWithCode,
+    db: Session = Depends(get_db)
+):
+    """Verify reset code and set new password"""
+    # Find user with this email and code
+    user = db.query(models.User).filter(
+        models.User.email == request.email,
+        models.User.reset_token == request.reset_code
+    ).first()
+    
+    # Check if code exists and is valid
+    if not user or not user.reset_token_expires or user.reset_token_expires < datetime.utcnow():
+        logger.warning(f"Invalid or expired password reset code used")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired code"
+        )
+    
+    # Update the password
+    user.hashed_password = get_password_hash(request.new_password)
+    
+    # Clear the reset code
+    user.reset_token = None
+    user.reset_token_expires = None
+    
+    db.commit()
+    
+    logger.info(f"Password successfully reset for user: {user.username}")
+    return {"status": "success", "message": "Password has been reset successfully"}

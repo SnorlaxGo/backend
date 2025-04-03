@@ -49,7 +49,7 @@ def setup_logging(app_name="go_game"):
     logger = logging.getLogger(app_name)
     
     # Set default level
-    log_level = os.environ.get("LOG_LEVEL", "DEBUG").upper()
+    log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
     logger.setLevel(getattr(logging, log_level))
     
     # Clear any existing handlers

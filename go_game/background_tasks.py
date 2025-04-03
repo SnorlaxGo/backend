@@ -68,7 +68,7 @@ async def cleanup_stale_games():
                 time_in_seconds = case(
                     (models.Game.time_control == TimeControl.BLITZ, TimeControl.BLITZ.value),  # 5 minutes
                     (models.Game.time_control == TimeControl.RAPID, TimeControl.RAPID.value),  # 10 minutes
-                    (models.Game.time_control == TimeControl.CLASSICAL, TimeControl.CLASSICAL.value),  # 30 minutes
+                    (models.Game.time_control == TimeControl.NORMAL, TimeControl.NORMAL.value),  # 30 minutes
                     else_=604800  # 7 days for correspondence
                 )
                 active_games = db.query(models.Game).filter(
