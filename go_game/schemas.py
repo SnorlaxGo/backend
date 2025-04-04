@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, EmailStr, validator
-from typing import List, Optional, Literal, List, Tuple, Dict, Any, Union
+from typing import List, Optional, List, Tuple, Dict, Any
 from datetime import datetime
 from enum import Enum
 from .models import StoneColor, ChallengeStatus, GameStatus

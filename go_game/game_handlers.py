@@ -118,19 +118,23 @@ async def process_game_move(
             logger.info("Move successful for game %d by user %s", game_id, username)
             return "success", {"status": "success"}, None
         
-    except InvalidMoveError as e:
-        logger.warning("Invalid move in game %d by user %s: %s", 
-                      game_id, username, str(e))
-        return "error", {}, str(e)
-    except KoViolationError as e:
-        logger.warning("Ko violation in game %d by user %s: %s", 
-                      game_id, username, str(e))
-        return "error", {}, str(e)
-    except SuicideMoveError as e:
-        logger.warning("Suicide move in game %d by user %s: %s", 
-                      game_id, username, str(e))
-        return "error", {}, str(e)
-    except Exception as e:
-        logger.error("Error making move in game %d by user %s: %s", 
-                    game_id, username, str(e), exc_info=True)
-        return "error", {}, str(e)
+    except (InvalidMoveError, KoViolationError, SuicideMoveError, Exception) as e:
+        # Get the error type from the exception class name
+        error_type = e.__class__.__name__.replace("Error", "").lower()
+        
+        logger.warning("%s in game %d by user %s: %s", 
+                      error_type.replace("_", " ").title(), game_id, username, str(e))
+        
+        # Get current game state to send back to client
+        current_state = service.get_game(game_id)
+        ws_resp = WebSocketResponse(
+            type=WebSocketResponseType.GAME_STATE,
+            data=current_state
+        )
+        redis_message = RedisGameUpdate(
+            game_id=game_id,
+            message=ws_resp.dict()
+        )
+        await redis_manager.publish(get_game_update_channel(game_id), redis_message.dict())
+
+        return "error", {"status": "error", "message": str(e)}, str(e)

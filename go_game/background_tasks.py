@@ -73,13 +73,19 @@ async def cleanup_stale_games():
                 )
                 active_games = db.query(models.Game).filter(
                     models.Game.status == GameStatus.ACTIVE,
-                    # Compare created_at with now using the game's own time control value
-                    models.Game.created_at < now - func.make_interval(secs=time_in_seconds * 2)
+                    models.Game.created_at < now - timedelta(seconds=time_in_seconds)
                 ).all()
 
                 logger.debug(f"Found {len(active_games)} active games")
 
                 for game in active_games:
+                    time_since_creation = now - game.created_at
+                    time_since_last_move = now - game.last_move_at if game.last_move_at else time_since_creation
+                    logger.info(
+                        f"Deactivating game {game.id}: created {time_since_creation.total_seconds()/3600:.2f} hours ago, "
+                        f"last move {time_since_last_move.total_seconds()/3600:.1f} hours ago, "
+                        f"time control: {game.time_control} ({time_in_seconds} seconds)"
+                    )
                     # Get time elapsed since last move
                     time_since_move = (now - game.last_move_at).total_seconds()
                     

@@ -67,7 +67,7 @@ class RedisManager:
         message["source_id"] = self.instance_id
 
         try:
-            logger.info(f"Publishing message to channel {channel}: {message}")
+            logger.debug(f"Publishing message to channel {channel}: {message}")
             await self.redis_conn.publish(channel, json.dumps(message))
             logger.debug("Published message to channel %s", channel)
         except Exception as e:
@@ -77,11 +77,11 @@ class RedisManager:
     async def subscribe(self, channel: str, callback):
         """Subscribe to a Redis channel"""
         if not self.redis_conn:
-            logger.debug("Redis connection not established, connecting now")
+            logger.info("Redis connection not established, connecting now")
             await self.connect()
         
         try:
-            logger.info("Subscribing to Redis channel: %s", channel)
+            logger.debug("Subscribing to Redis channel: %s", channel)
             await self.pubsub.subscribe(**{channel: callback})
         except Exception as e:
             logger.error("Failed to subscribe to Redis channel %s: %s", channel, str(e), exc_info=True)
