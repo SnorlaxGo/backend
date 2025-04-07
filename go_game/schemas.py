@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, EmailStr, validator
-from typing import List, Optional, List, Tuple, Dict, Any
+from typing import List, Optional, List, Tuple, Dict, Any, Union
 from datetime import datetime
 from enum import Enum
 from .models import StoneColor, ChallengeStatus, GameStatus
@@ -133,8 +133,24 @@ class GameMoveRequest(BaseModel):
 
 class Token(BaseModel):
     access_token: str
+    refresh_token: str
     token_type: str
+    username: str
 
+
+class TokenData(BaseModel):
+    username: Union[str, None] = None
+    token_type: str = "access"
+
+
+class User(BaseModel):
+    username: str
+    email: Union[str, None] = None
+    full_name: Union[str, None] = None
+    disabled: Union[bool, None] = None
+
+class UserInDB(User):
+    hashed_password: str
 class GameMoveSuccessResponse(BaseModel):
     status: str
     board: list[list[int]] 
@@ -250,3 +266,8 @@ class PasswordResetWithCode(BaseModel):
         if len(v) < 8:
             raise ValueError('Password must be at least 8 characters')
         return v
+
+class AppleLoginRequest(BaseModel):
+    """Schema for Apple login request"""
+    identity_token: str
+    name: Optional[str] = None  # Apple might not provide name

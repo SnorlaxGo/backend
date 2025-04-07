@@ -7,11 +7,15 @@ from jwt import PyJWTError
 from .database import get_db
 from . import models
 from pydantic import BaseModel
-from typing import Union, List
+from typing import Union, List, Dict, Optional, Tuple
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 import os
 from functools import wraps
+import json
+import requests
+from .config import settings
+from .schemas import Token, TokenData, User, UserInDB
 
 load_dotenv()
 
@@ -24,25 +28,8 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 
-class Token(BaseModel):
-    access_token: str
-    refresh_token: str
-    token_type: str
-
-
-class TokenData(BaseModel):
-    username: Union[str, None] = None
-    token_type: str = "access"
-
-
-class User(BaseModel):
-    username: str
-    email: Union[str, None] = None
-    full_name: Union[str, None] = None
-    disabled: Union[bool, None] = None
-
-class UserInDB(User):
-    hashed_password: str
+APPLE_PUBLIC_KEYS_URL = "https://appleid.apple.com/auth/keys"
+APPLE_CLIENT_ID = settings.APPLE_CLIENT_ID
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
@@ -142,4 +129,75 @@ def check_permissions(allowed_roles: List[str]):
             return await func(*args, current_user=current_user, **kwargs)
         return wrapper
     return decorator
+
+def get_apple_public_keys() -> Dict:
+    """Fetch Apple's public keys for token verification"""
+    try:
+        response = requests.get(APPLE_PUBLIC_KEYS_URL)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as e:
+        raise ValueError(f"Failed to fetch Apple public keys: {str(e)}")
+
+def verify_apple_token(identity_token: str) -> Tuple[bool, Optional[Dict], Optional[str]]:
+    """
+    Verify an Apple identity token
+    
+    Args:
+        identity_token: The identity token from Apple Sign In
+        
+    Returns:
+        Tuple containing:
+        - Boolean indicating if verification was successful
+        - Dictionary with token claims if successful, None otherwise
+        - Error message if verification failed, None otherwise
+    """
+    if not APPLE_CLIENT_ID:
+        return False, None, "APPLE_CLIENT_ID environment variable not set"
+    
+    try:
+        # Get the Apple public keys
+        apple_keys = get_apple_public_keys()
+        
+        # Get the kid (Key ID) from the token header
+        token_headers = jwt.get_unverified_header(identity_token)
+        kid = token_headers.get('kid')
+        
+        if not kid:
+            return False, None, "No key ID found in token header"
+        
+        # Find the matching public key
+        public_key = None
+        for key in apple_keys.get('keys', []):
+            if key.get('kid') == kid:
+                # Convert JWK to PEM format
+                public_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(key))
+                break
+        
+        if not public_key:
+            return False, None, "No matching public key found"
+        
+        # Verify the token
+        payload = jwt.decode(
+            identity_token,
+            public_key,
+            algorithms=['RS256'],
+            audience=APPLE_CLIENT_ID,  # Your app's client ID
+            options={"verify_exp": True}
+        )
+        
+        # Verify issuer is Apple
+        if payload.get('iss') != 'https://appleid.apple.com':
+            return False, None, "Invalid token issuer"
+        
+        return True, payload, None
+        
+    except jwt.ExpiredSignatureError:
+        return False, None, "Token has expired"
+    except jwt.InvalidAudienceError:
+        return False, None, "Token has invalid audience"
+    except jwt.DecodeError:
+        return False, None, "Token signature verification failed"
+    except Exception as e:
+        return False, None, f"Token verification failed: {str(e)}"
 

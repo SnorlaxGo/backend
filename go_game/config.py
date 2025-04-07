@@ -22,4 +22,7 @@ class Settings:
     MAILGUN_API_KEY: str = os.getenv("MAILGUN_API_KEY", "your-mailgun-api-key")
     MAILGUN_DOMAIN: str = os.getenv("MAILGUN_DOMAIN", "your-domain.com")
 
+    # Apple settings
+    APPLE_CLIENT_ID: str = "tonsil.go"
+
 settings = Settings() 

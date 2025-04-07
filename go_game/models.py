@@ -198,7 +198,7 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True)
     email = Column(String, unique=True, index=True)
-    hashed_password = Column(String)
+    hashed_password = Column(String, nullable=True)
     role = Column(String, default=UserRole.USER)
     is_anonymous = Column(Boolean, default=False)
     reset_token = Column(String, unique=True, nullable=True, index=True)
@@ -209,6 +209,7 @@ class User(Base):
     # Keep the game relationships
     games_as_black = relationship("Game", foreign_keys=[Game.black_player_id], back_populates="black_player")
     games_as_white = relationship("Game", foreign_keys=[Game.white_player_id], back_populates="white_player")
+    auth_providers = relationship("AuthProvider", back_populates="user")
 
 
 class StoneColor(IntEnum):
@@ -263,3 +264,33 @@ class PlayerRating(Base):
         UniqueConstraint('user_id', 'board_size', 'time_control', name='unique_user_rating'),
     )
 """
+
+from enum import Enum as PyEnum  # Rename to avoid conflict with SQLAlchemy's Enum
+
+# Add this enum class with your other enums
+class AuthProviderType(str, PyEnum):
+    APPLE = "apple"
+    GOOGLE = "google"
+    EMAIL = "email"
+    FACEBOOK = "facebook"
+    GITHUB = "github"
+
+class AuthProvider(Base):
+    """Model for storing authentication provider information"""
+    __tablename__ = "auth_providers"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    provider = Column(String, Enum(AuthProviderType), nullable=False)  # Use the enum
+    provider_user_id = Column(String, nullable=False)  # Provider's unique identifier
+    provider_email = Column(String, nullable=True)  # Email from the provider
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationship to User
+    user = relationship("User", back_populates="auth_providers")
+    
+    # Composite unique constraint
+    __table_args__ = (
+        UniqueConstraint('provider', 'provider_user_id', name='uix_provider_id'),
+    )

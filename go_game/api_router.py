@@ -6,13 +6,12 @@ from .database import engine, get_db
 from fastapi.security import OAuth2PasswordRequestForm
 import go_game.models as models
 from .game_logic import GameService, InvalidMoveError, KoViolationError, SuicideMoveError, MoveResultType, MoveResult
-from .models import StoneColor, GameStatus, TimeControl
+from .models import StoneColor, GameStatus, AuthProviderType
 from .event_manager import redis_manager, get_game_update_channel, get_challenge_update_channel
 
 from .schemas import (
     GameStateResponse,
     GameMoveRequest,
-    Token,
     GameMoveSuccessResponse,
     OpenChallengeResponse,
     DirectChallenge,
@@ -31,9 +30,18 @@ from .schemas import (
     MoveResponse,
     GameHistory,
     PasswordResetRequest,
-    PasswordResetWithCode
+    PasswordResetWithCode,
+    AppleLoginRequest,
+    Token
     )
-from .auth import get_current_user, Token, authenticate_user, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, create_refresh_token, validate_token, get_password_hash
+from .auth import (get_current_user,
+                   authenticate_user, 
+                   create_access_token, 
+                   ACCESS_TOKEN_EXPIRE_MINUTES, 
+                   create_refresh_token, 
+                   validate_token, 
+                   get_password_hash, 
+                   verify_apple_token)
 from .utils.board_visualizer import visualize_game
 from datetime import timedelta, datetime
 from .background_tasks import cleanup_stale_challenges, cleanup_stale_games
@@ -49,9 +57,6 @@ import string
 
 # Create router instead of app
 router = APIRouter()
-
-# Create the database tables
-models.Base.metadata.create_all(bind=engine)
 
 @router.on_event("startup")
 async def startup_event():
@@ -96,7 +101,7 @@ async def login(
     )
     refresh_token = create_refresh_token(data={"sub": user.username})
     logger.info("Successful login for user: %s", user.username)
-    return Token(access_token=access_token, refresh_token=refresh_token, token_type="bearer")
+    return Token(username=user.username, access_token=access_token, refresh_token=refresh_token, token_type="bearer")
 
 @router.post("/register", response_model=Token)
 async def register(
@@ -717,3 +722,135 @@ async def verify_reset_code(
     
     logger.info(f"Password successfully reset for user: {user.username}")
     return {"status": "success", "message": "Password has been reset successfully"}
+
+@router.post("/auth/apple", response_model=Token)
+async def login_with_apple(
+    apple_data: AppleLoginRequest,
+    db: Session = Depends(get_db)
+) -> Token:
+    """Login or register with Apple credentials"""
+    logger.info("Apple login attempt")
+    
+    try:
+        # Verify the Apple identity token
+        is_valid, payload, error_message = verify_apple_token(apple_data.identity_token)
+        
+        if not is_valid:
+            logger.warning(f"Apple token validation failed: {error_message}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Invalid Apple token: {error_message}",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        # Extract user ID and email from the token payload
+        apple_user_id = payload.get('sub')
+        apple_email = payload.get('email')
+        
+        if not apple_user_id:
+            logger.warning("No user ID found in Apple token")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid Apple token: missing user ID",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        if not apple_email:
+            logger.warning("No email found in Apple token")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email not provided in Apple token",
+            )
+        
+        # Check if this Apple ID is already linked to a user
+        auth_provider = db.query(models.AuthProvider).filter(
+            models.AuthProvider.provider == AuthProviderType.APPLE,
+            models.AuthProvider.provider_user_id == apple_user_id
+        ).first()
+        
+        if auth_provider:
+            # User exists, retrieve and return tokens
+            user = db.query(models.User).filter(models.User.id == auth_provider.user_id).first()
+            logger.info("Existing Apple user found: %s", user.username)
+            
+            # Update provider email if it changed (Apple relay emails can change)
+            if auth_provider.provider_email != apple_email:
+                auth_provider.provider_email = apple_email
+                db.commit()
+        else:
+            # Check if a user with this email already exists
+            existing_user = db.query(models.User).filter(models.User.email == apple_email).first()
+            
+            if existing_user:
+                # Link this Apple ID to the existing account
+                logger.info(f"Linking Apple ID to existing account: {existing_user.username}")
+                
+                auth_provider = models.AuthProvider(
+                    user_id=existing_user.id,
+                    provider=AuthProviderType.APPLE,
+                    provider_user_id=apple_user_id,
+                    provider_email=apple_email
+                )
+                db.add(auth_provider)
+                db.commit()
+                
+                user = existing_user
+            else:
+                # Create new user
+                logger.info("Creating new user for Apple login")
+                
+                # Get name from token or use email as fallback
+                name = payload.get('name', {})
+                full_name = f"{name.get('firstName', '')} {name.get('lastName', '')}".strip()
+                
+                # Generate a unique username
+                base_username = full_name.split()[0].lower() if full_name else apple_email.split('@')[0]
+                username = base_username
+                
+                # Ensure username is unique
+                counter = 1
+                while db.query(models.User).filter(models.User.username == username).first():
+                    username = f"{base_username}{counter}"
+                    counter += 1
+                
+                # Create the user
+                user = models.User(
+                    username=username,
+                    email=apple_email,
+                    hashed_password=None,
+                    role=models.UserRole.USER
+                )
+                db.add(user)
+                db.commit()
+                db.refresh(user)
+                
+                # Create the auth provider link
+                auth_provider = models.AuthProvider(
+                    user_id=user.id,
+                    provider=AuthProviderType.APPLE,
+                    provider_user_id=apple_user_id,
+                    provider_email=apple_email
+                )
+                db.add(auth_provider)
+                db.commit()
+                
+                logger.info("Created new user from Apple login: %s", username)
+        
+        # Generate tokens
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user.username},
+            expires_delta=access_token_expires
+        )
+        refresh_token = create_refresh_token(data={"sub": user.username})
+        
+        return Token(username=user.username, access_token=access_token, refresh_token=refresh_token, token_type="bearer")
+        
+    except Exception as e:
+        logger.error(f"Apple login error: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication failed",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
