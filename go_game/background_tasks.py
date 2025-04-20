@@ -65,12 +65,16 @@ async def cleanup_stale_games():
                 now = datetime.utcnow()
                 
                 # Find active games
-                time_in_seconds = case(
-                    (models.Game.time_control == TimeControl.BLITZ, TimeControl.BLITZ.value),  # 5 minutes
-                    (models.Game.time_control == TimeControl.RAPID, TimeControl.RAPID.value),  # 10 minutes
-                    (models.Game.time_control == TimeControl.NORMAL, TimeControl.NORMAL.value),  # 30 minutes
-                    else_=604800  # 7 days for correspondence
-                )
+                time_in_seconds = 0
+                if models.Game.time_control == TimeControl.BLITZ:
+                    time_in_seconds = TimeControl.BLITZ.value
+                elif models.Game.time_control == TimeControl.RAPID:
+                    time_in_seconds = TimeControl.RAPID.value
+                elif models.Game.time_control == TimeControl.NORMAL:
+                    time_in_seconds = TimeControl.NORMAL.value
+                else:
+                    time_in_seconds = 604800  # 7 days for correspondence
+                    
                 active_games = db.query(models.Game).filter(
                     models.Game.status == GameStatus.ACTIVE,
                     models.Game.created_at < now - timedelta(seconds=time_in_seconds)
