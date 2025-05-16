@@ -10,6 +10,7 @@ import socket
 import uuid
 from .database import get_db
 import math
+from .config import settings
 
 # Initialize the timer service with a db factory that works with the existing get_db
 def db_factory():
@@ -28,9 +29,9 @@ class GameTimerService:
         self.heartbeat_task = None
         
         # Configuration
-        self.LEASE_TTL = 120       # Lease expires after 30 seconds
-        self.HEARTBEAT_INTERVAL = 20  # Renew lease every 5 seconds
-        self.ELECTION_INTERVAL = 40  # Try to become leader every 10 seconds
+        self.LEASE_TTL = settings.TIMER_LEASE_TTL       # Lease expires after 30 seconds
+        self.HEARTBEAT_INTERVAL = settings.TIMER_HEARTBEAT_INTERVAL  # Renew lease every 5 seconds
+        self.ELECTION_INTERVAL = settings.TIMER_ELECTION_INTERVAL  # Try to become leader every 10 seconds
     
     async def start(self):
         """Start the timer service"""

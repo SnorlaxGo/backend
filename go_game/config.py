@@ -24,5 +24,8 @@ class Settings:
 
     # Apple settings
     APPLE_CLIENT_ID: str = "tonsil.go"
+    TIMER_LEASE_TTL: int = os.getenv("TIMER_LEASE_TTL", 120)
+    TIMER_HEARTBEAT_INTERVAL: int = os.getenv("TIMER_HEARTBEAT_INTERVAL", 20)
+    TIMER_ELECTION_INTERVAL: int = os.getenv("TIMER_ELECTION_INTERVAL", 40)
 
 settings = Settings() 
