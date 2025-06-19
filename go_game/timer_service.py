@@ -29,9 +29,9 @@ class GameTimerService:
         self.heartbeat_task = None
         
         # Configuration
-        self.LEASE_TTL = settings.TIMER_LEASE_TTL       # Lease expires after 30 seconds
-        self.HEARTBEAT_INTERVAL = settings.TIMER_HEARTBEAT_INTERVAL  # Renew lease every 5 seconds
-        self.ELECTION_INTERVAL = settings.TIMER_ELECTION_INTERVAL  # Try to become leader every 10 seconds
+        self.LEASE_TTL = settings.TIMER_LEASE_TTL
+        self.HEARTBEAT_INTERVAL = settings.TIMER_HEARTBEAT_INTERVAL
+        self.ELECTION_INTERVAL = settings.TIMER_ELECTION_INTERVAL
     
     async def start(self):
         """Start the timer service"""

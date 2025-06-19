@@ -32,7 +32,11 @@ from .schemas import (
     PasswordResetRequest,
     PasswordResetWithCode,
     AppleLoginRequest,
-    Token
+    Token,
+    ScoringRequest,
+    ScoringResponse,
+    ScoringStatus,
+    ScoringNotification
     )
 from .auth import (get_current_user,
                    authenticate_user, 
@@ -54,6 +58,7 @@ from .loggers import api_logger as logger  # Import the logger
 from .game_handlers import process_game_move
 from .email_service import send_password_reset_code_email
 import string
+from .scoring_service import scoring_service
 
 # Create router instead of app
 router = APIRouter()
@@ -147,7 +152,7 @@ async def register(
     refresh_token = create_refresh_token(data={"sub": db_user.username})
 
     logger.info("Successfully registered user: %s", user_data.username)
-    return Token(access_token=access_token, refresh_token=refresh_token, token_type="bearer")
+    return Token(access_token=access_token, refresh_token=refresh_token, username=db_user.username, token_type="bearer")
 
 
 @router.get("/me", response_model=UserInfoResponse)
@@ -179,12 +184,12 @@ def create_direct_challenge(challenge: DirectChallenge,
                             current_user: models.User = Depends(get_current_user),
                             db: Session = Depends(get_db)):
     # Create a new game with pending status
-    new_game = models.Game(
-        challenger_id=current_user.id,  # You'll need to implement user authentication
-        challenged_id=challenge.challenged_user_id,
+    new_challenge = models.Challenge(
+        challenger_id=current_user.id,
+        challenged_user_id=challenge.challenged_user_id,
         board_size=challenge.board_size,
         time_control=challenge.time_control,
-        status="pending"
+        status="open"
     )
     db.add(new_game)
     db.commit()
@@ -607,6 +612,100 @@ async def accept_draw(
         message="Draw accepted, game ended in a draw"
     )
 
+@router.post("/game/{game_id}/scoring")
+async def submit_scoring(
+    game_id: int,
+    scoring: ScoringRequest,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+) -> ScoringResponse:
+    gs = GameService(db)
+    game = gs.get_game(game_id)
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    # Verify the user is a player in this game
+    if current_user.id not in [game.black_player_id, game.white_player_id]:
+        raise HTTPException(status_code=403, detail="Not a player in this game")
+
+    # Calculate score for this submission
+    black_captures, white_captures = gs.get_captures(game)
+    
+    # Submit scoring via scoring service
+    await scoring_service.submit_scoring(
+        game_id, current_user.id, 
+        scoring.white_territory, scoring.black_territory,
+        black_captures, white_captures
+    )
+    
+    # Check if both players have submitted and scores match
+    expected_players = {game.black_player_id, game.white_player_id}
+    both_submitted, scores_match, final_black_score, final_white_score = await scoring_service.check_scoring_agreement(
+        game_id, expected_players
+    )
+
+    if not both_submitted:
+        return ScoringResponse(
+            black_score=black_captures,
+            white_score=white_captures,
+            complete=False
+        )
+    
+    if both_submitted and scores_match:
+        # Finalize the game
+        game.black_points = final_black_score
+        game.white_points = final_white_score
+        
+        # Determine winner
+        if game.black_points > game.white_points:
+            game.status = GameStatus.BLACK_WON
+        elif game.white_points > game.black_points:
+            game.status = GameStatus.WHITE_WON
+        else:
+            game.status = GameStatus.DRAW
+        
+        db.commit()
+        
+        # Mark as agreed and clear data
+        await scoring_service.mark_scoring_agreed(game_id)
+        await scoring_service.clear_scoring_data(game_id)
+    
+    # Get current status and notify other player
+    scoring_status = await scoring_service.get_scoring_status(game_id, expected_players)
+    
+    notification = ScoringNotification(data=scoring_status)
+    await redis_manager.publish(
+        get_game_update_channel(game_id), 
+        {
+            "game_id": game_id,
+            "message": notification.dict(),
+            "target_id": game.white_player_id if current_user.id == game.black_player_id else game.black_player_id
+        }
+    )
+    
+    return ScoringResponse(
+        black_score=final_black_score,
+        white_score=final_white_score,
+        complete=True
+    )
+
+@router.get("/game/{game_id}/scoring/status")
+async def get_scoring_status(
+    game_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+) -> ScoringStatus:
+    """Get the current scoring status for a game"""
+    game = db.query(models.Game).filter(models.Game.id == game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    
+    if current_user.id not in [game.black_player_id, game.white_player_id]:
+        raise HTTPException(status_code=403, detail="Not a player in this game")
+    
+    expected_players = {game.black_player_id, game.white_player_id}
+    return await scoring_service.get_scoring_status(game_id, expected_players)
+
 class RefreshTokenRequest(BaseModel):
     refresh_token: str
 
@@ -650,6 +749,7 @@ async def refresh_token(
         return Token(
             access_token=access_token,
             refresh_token=refresh_token,
+            username=user.username,
             token_type="bearer"
         )
     except PyJWTError:

@@ -44,6 +44,20 @@ class WebSocketRequest(BaseModel):
 class PingData(BaseModel):
     move_number: int
 
+class Coordinate(BaseModel):
+    x: int
+    y: int
+
+
+class ScoringRequest(BaseModel):
+    white_territory: list[Coordinate]
+    black_territory: list[Coordinate]
+
+class ScoringResponse(BaseModel):
+    black_score: int
+    white_score: int
+    complete: bool = False
+
 class MoveData(BaseModel):
     x: int
     y: int
@@ -271,3 +285,19 @@ class AppleLoginRequest(BaseModel):
     """Schema for Apple login request"""
     identity_token: str
     name: Optional[str] = None  # Apple might not provide name
+
+class ScoringSubmission(BaseModel):
+    white_territory: list[Coordinate]
+    black_territory: list[Coordinate]
+    dead_stones: list[Coordinate] = []  # Optional: stones marked as dead
+
+class ScoringStatus(BaseModel):
+    players_submitted: list[int]
+    scores_match: Optional[bool] = None
+    black_score: Optional[int] = None
+    white_score: Optional[int] = None
+    status: str  # "waiting", "mismatch", "agreed"
+
+class ScoringNotification(BaseModel):
+    type: str = "scoring_update"
+    data: ScoringStatus
